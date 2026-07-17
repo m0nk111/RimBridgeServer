@@ -227,30 +227,31 @@ Parameters:
 
 ### `rimworld/set_time_speed`
 
-Set RimWorld's current time speed directly
+Set RimWorld's current time speed directly, optionally toggling RimWorld's private ultrafast debug speed boost
 
 Parameters:
 - `speed` (`string`, `optional`, default `"Normal"`): Desired time speed: Paused, Normal, Fast, Superfast, or Ultrafast
+- `ultraSpeedBoost` (`bool?`, `optional`, default `null`): When set, also set RimWorld's private TickManager.UltraSpeedBoost flag. Leave null to preserve the current value.
 
 ### `rimworld/play_for`
 
-Unpause the current game at a requested time speed for a bounded real-time duration, then pause it again, optionally suppressing RimWorld's forced-normal-speed slowdown during the run
+Unpause the current game at a requested time speed for a bounded real-time duration, then pause it again, optionally suppressing forced-normal-speed slowdown and enabling RimWorld's ultrafast debug boost during the run
 
 Parameters:
 - `durationMs` (`int`, `required`): Real-time duration in milliseconds to keep the game unpaused before pausing it again
 - `speed` (`string`, `optional`, default `"Normal"`): Desired play speed while the game is running: Normal, Fast, Superfast, or Ultrafast
 - `pollIntervalMs` (`int`, `optional`, default `25`): How often to poll playback state while waiting to repause
-- `forceRequestedSpeed` (`bool`, `optional`, default `false`): When true, temporarily suppress RimWorld's forced-normal-speed slowdown while preserving the normal TickManager update path
+- `forceRequestedSpeed` (`bool`, `optional`, default `false`): When true, temporarily suppress RimWorld's forced-normal-speed slowdown and enable TickManager.UltraSpeedBoost while preserving the normal TickManager update path
 
 ### `rimworld/play_until_letter`
 
-Unpause the current game at a requested time speed until a new right-side letter appears, then pause and return the new letter payload
+Unpause the current game at a requested time speed until a new right-side letter appears, then pause and return the new letter payload; optionally uses RimWorld's ultrafast debug boost during the run
 
 Parameters:
 - `timeoutMs` (`int`, `optional`, default `1800000`): Maximum real-time wait in milliseconds before pausing and timing out
 - `speed` (`string`, `optional`, default `"Normal"`): Desired play speed while waiting: Normal, Fast, Superfast, or Ultrafast
 - `pollIntervalMs` (`int`, `optional`, default `250`): How often to poll the letter stack while waiting
-- `forceRequestedSpeed` (`bool`, `optional`, default `false`): When true, temporarily suppress RimWorld's forced-normal-speed slowdown while preserving the normal TickManager update path
+- `forceRequestedSpeed` (`bool`, `optional`, default `false`): When true, temporarily suppress RimWorld's forced-normal-speed slowdown and enable TickManager.UltraSpeedBoost while preserving the normal TickManager update path
 - `includeExistingLetters` (`bool`, `optional`, default `false`): When false, letters already present when the wait starts are ignored and only newly added letters complete the wait
 
 ### `rimworld/step_game_ticks`

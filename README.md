@@ -321,9 +321,9 @@ Lua authoring note: `rimbridge/run_lua` is intentionally a lowered Lua subset, n
 ### Debug Actions And Mods
 
 - `rimworld/pause_game` - Pause or unpause the game
-- `rimworld/set_time_speed` - Set RimWorld's current time speed directly
-- `rimworld/play_for` - Unpause the current game at a requested time speed for a bounded real-time duration, then pause it again, optionally suppressing RimWorld's forced-normal-speed slowdown during the run
-- `rimworld/play_until_letter` - Unpause the current game at a requested time speed until a new right-side letter appears, then pause and return the new letter payload
+- `rimworld/set_time_speed` - Set RimWorld's current time speed directly, optionally toggling RimWorld's private ultrafast debug speed boost
+- `rimworld/play_for` - Unpause the current game at a requested time speed for a bounded real-time duration, then pause it again, optionally suppressing forced-normal-speed slowdown and enabling RimWorld's ultrafast debug boost during the run
+- `rimworld/play_until_letter` - Unpause the current game at a requested time speed until a new right-side letter appears, then pause and return the new letter payload; optionally uses RimWorld's ultrafast debug boost during the run
 - `rimworld/step_game_ticks` - Advance the paused game by an exact number of ticks, one tick per Unity update frame, mirroring RimWorld's Dev_TickOnce path while preserving render-frame boundaries
 - `rimworld/list_debug_action_roots` - List top-level RimWorld debug action roots using stable internal debug-action paths
 - `rimworld/list_debug_action_children` - List direct children of a RimWorld debug action path
