@@ -637,16 +637,13 @@ internal static class RimBridgeUiWorkbench
 
     public static void BeginSelectedGizmosSurface()
     {
-        BeginSurface(new SurfaceDescriptor
+        if (!TryCreateSelectedGizmosSurface(out var descriptor))
         {
-            SurfaceTargetId = SelectionGizmosSurfaceId,
-            SurfaceKind = "selection_gizmos",
-            Type = typeof(GizmoGridDrawer).FullName ?? nameof(GizmoGridDrawer),
-            Label = "Selected gizmos",
-            SemanticKind = "selection_gizmos",
-            SemanticDetails = DescribeSelectedGizmosSurface(),
-            Rect = ToSnapshot(new Rect(0f, 0f, UI.screenWidth, UI.screenHeight))
-        });
+            BeginSurface((SurfaceDescriptor)null);
+            return;
+        }
+
+        BeginSurface(descriptor);
     }
 
     public static void BeginInspectTabsSurface(IInspectPane pane)
@@ -657,16 +654,59 @@ internal static class RimBridgeUiWorkbench
             return;
         }
 
-        BeginSurface(new SurfaceDescriptor
+        if (!TryCreateInspectTabsSurface(pane, out var descriptor))
         {
-            SurfaceTargetId = ScreenTargetIds.CreateMainTabTargetId(MainButtonDefOf.Inspect.defName),
-            SurfaceKind = "main_tab",
-            Type = typeof(MainTabWindow_Inspect).FullName ?? nameof(MainTabWindow_Inspect),
-            Label = MainButtonDefOf.Inspect.LabelCap.ToString(),
-            SemanticKind = "inspect_tabs",
-            SemanticDetails = DescribeInspectTabsSurface(pane),
-            Rect = ToSnapshot(CreateInspectTabsSurfaceRect(pane))
-        });
+            BeginSurface((SurfaceDescriptor)null);
+            return;
+        }
+
+        BeginSurface(descriptor);
+    }
+
+    private static bool TryCreateSelectedGizmosSurface(out SurfaceDescriptor descriptor)
+    {
+        try
+        {
+            descriptor = new SurfaceDescriptor
+            {
+                SurfaceTargetId = SelectionGizmosSurfaceId,
+                SurfaceKind = "selection_gizmos",
+                Type = typeof(GizmoGridDrawer).FullName ?? nameof(GizmoGridDrawer),
+                Label = "Selected gizmos",
+                SemanticKind = "selection_gizmos",
+                SemanticDetails = DescribeSelectedGizmosSurface(),
+                Rect = ToSnapshot(new Rect(0f, 0f, UI.screenWidth, UI.screenHeight))
+            };
+            return true;
+        }
+        catch
+        {
+            descriptor = null;
+            return false;
+        }
+    }
+
+    private static bool TryCreateInspectTabsSurface(IInspectPane pane, out SurfaceDescriptor descriptor)
+    {
+        try
+        {
+            descriptor = new SurfaceDescriptor
+            {
+                SurfaceTargetId = ScreenTargetIds.CreateMainTabTargetId(MainButtonDefOf.Inspect.defName),
+                SurfaceKind = "main_tab",
+                Type = typeof(MainTabWindow_Inspect).FullName ?? nameof(MainTabWindow_Inspect),
+                Label = MainButtonDefOf.Inspect.LabelCap.ToString(),
+                SemanticKind = "inspect_tabs",
+                SemanticDetails = DescribeInspectTabsSurface(pane),
+                Rect = ToSnapshot(CreateInspectTabsSurfaceRect(pane))
+            };
+            return true;
+        }
+        catch
+        {
+            descriptor = null;
+            return false;
+        }
     }
 
     private static void BeginSurface(SurfaceDescriptor descriptor)
@@ -1518,7 +1558,7 @@ internal static class RimBridgeUiWorkbench
 
     private static object DescribeSelectedGizmosSurface()
     {
-        var selectedCount = Find.Selector?.SelectedObjectsListForReading?.Count ?? 0;
+        var selectedCount = SafeMapSelectedObjectCount();
         return new
         {
             selectedCount
@@ -1544,10 +1584,20 @@ internal static class RimBridgeUiWorkbench
 
         return new
         {
-            selectedCount = Find.Selector?.SelectedObjectsListForReading?.Count ?? 0,
+            selectedCount = SafeMapSelectedObjectCount(),
             tabCount = tabs.Count,
             tabs
         };
+    }
+
+    private static int SafeMapSelectedObjectCount()
+    {
+        return SafeMapSelector()?.SelectedObjectsListForReading?.Count ?? 0;
+    }
+
+    private static Selector SafeMapSelector()
+    {
+        return (Find.UIRoot as UIRoot_Play)?.mapUI?.selector;
     }
 
     private static Rect CreateInspectTabsSurfaceRect(IInspectPane pane)

@@ -22,7 +22,7 @@ internal sealed class AnnotatedExtensionCapabilityProvider : IRimBridgeCapabilit
 {
     private const int DefaultExtensionToolTimeoutMs = 60000;
     private const int MinimumExtensionToolTimeoutMs = 1000;
-    private const int MaximumExtensionToolTimeoutMs = 600000;
+    private const int MaximumExtensionToolTimeoutMs = 14400000;
     private const string ExecutionTimeoutArgumentName = "_rimBridgeTimeoutMs";
 
     internal sealed class DiscoveredTool

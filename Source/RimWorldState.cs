@@ -239,6 +239,10 @@ internal static class RimWorldState
         {
             pawnId = GetThingId(pawn),
             thingIdNumber = pawn.thingIDNumber,
+            className = pawn.GetType().FullName ?? pawn.GetType().Name,
+            defName = pawn.def?.defName,
+            kindDef = pawn.kindDef?.defName,
+            race = pawn.def?.race?.ToString(),
             name = pawn.Name?.ToStringShort ?? pawn.LabelShort,
             fullName = pawn.Name?.ToStringFull ?? pawn.LabelCap,
             label = pawn.LabelCap,
@@ -253,7 +257,14 @@ internal static class RimWorldState
             position = pawn.Position.IsValid ? new { x = pawn.Position.x, z = pawn.Position.z } : null,
             job = pawn.CurJob?.def?.defName,
             mentalState = pawn.MentalStateDef?.defName,
-            faction = pawn.Faction?.Name
+            faction = pawn.Faction?.Name,
+            factionDef = pawn.Faction?.def?.defName,
+            factionIsPlayer = pawn.Faction?.IsPlayer ?? false,
+            factionHostileToPlayer = pawn.Faction != null && Faction.OfPlayer != null && pawn.Faction.HostileTo(Faction.OfPlayer),
+            humanlike = pawn.RaceProps?.Humanlike ?? false,
+            animal = pawn.RaceProps?.Animal ?? false,
+            mechanoid = pawn.RaceProps?.IsMechanoid ?? false,
+            insect = pawn.RaceProps?.FleshType == FleshTypeDefOf.Insectoid
         };
     }
 

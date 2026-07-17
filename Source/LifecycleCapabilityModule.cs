@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using RimBridgeServer.Core;
 using RimWorld;
 using UnityEngine;
@@ -14,6 +15,26 @@ internal sealed class LifecycleCapabilityModule
 {
     private static readonly MainThreadDispatcher Dispatcher = new();
     private static readonly ConditionWaiter Waiter = new();
+    private static readonly FieldInfo UltraSpeedBoostField = typeof(TickManager).GetField("UltraSpeedBoost", BindingFlags.Static | BindingFlags.NonPublic);
+
+    private sealed class LetterWaitState
+    {
+        public bool Available { get; set; } = true;
+
+        public bool Paused { get; set; }
+
+        public long TickCount { get; set; }
+
+        public object SessionToken { get; set; }
+
+        public object Snapshot { get; set; }
+
+        public string Message { get; set; } = string.Empty;
+
+        public List<string> LetterIds { get; set; } = [];
+
+        public List<object> MatchingLetters { get; set; } = [];
+    }
 
     public object PauseGame(bool pause = true)
     {
@@ -36,7 +57,7 @@ internal sealed class LifecycleCapabilityModule
         };
     }
 
-    public object SetTimeSpeed(string speed = "Normal")
+    public object SetTimeSpeed(string speed = "Normal", bool? ultraSpeedBoost = null)
     {
         if (Current.Game == null || Find.TickManager == null)
         {
@@ -58,11 +79,20 @@ internal sealed class LifecycleCapabilityModule
             };
         }
 
+        var previousUltraSpeedBoost = TryReadUltraSpeedBoost();
+        bool? currentUltraSpeedBoost = null;
+        if (ultraSpeedBoost != null)
+            currentUltraSpeedBoost = TrySetUltraSpeedBoost(ultraSpeedBoost.Value);
+
         Find.TickManager.CurTimeSpeed = parsed;
         return new
         {
             success = true,
             timeSpeed = Find.TickManager.CurTimeSpeed.ToString(),
+            ultraSpeedBoostAvailable = UltraSpeedBoostField != null,
+            requestedUltraSpeedBoost = ultraSpeedBoost,
+            previousUltraSpeedBoost,
+            currentUltraSpeedBoost = currentUltraSpeedBoost ?? TryReadUltraSpeedBoost(),
             paused = Find.TickManager.Paused,
             message = $"Time speed set to {Find.TickManager.CurTimeSpeed}.",
             state = RimWorldState.ToolStateSnapshot()
@@ -113,6 +143,8 @@ internal sealed class LifecycleCapabilityModule
 
         bool? previousNeverForceNormalSpeed = null;
         bool? restoredNeverForceNormalSpeed = null;
+        bool? previousUltraSpeedBoost = null;
+        bool? restoredUltraSpeedBoost = null;
 
         try
         {
@@ -129,6 +161,7 @@ internal sealed class LifecycleCapabilityModule
                     {
                         previousNeverForceNormalSpeed = DebugViewSettings.neverForceNormalSpeed;
                         DebugViewSettings.neverForceNormalSpeed = true;
+                        previousUltraSpeedBoost = TrySetUltraSpeedBoost(true);
                     }
                     stopwatch = Stopwatch.StartNew();
                     EnsurePlaybackRunning(parsedSpeed);
@@ -142,13 +175,18 @@ internal sealed class LifecycleCapabilityModule
                     finally
                     {
                         restoredNeverForceNormalSpeed = RestoreNeverForceNormalSpeed(previousNeverForceNormalSpeed);
+                        restoredUltraSpeedBoost = RestoreUltraSpeedBoost(previousUltraSpeedBoost);
                     }
                 }, timeoutMs: 5000));
 
             restoredNeverForceNormalSpeed ??= RimBridgeMainThread.Invoke(
                 () => RestoreNeverForceNormalSpeed(previousNeverForceNormalSpeed),
                 timeoutMs: 5000);
+            restoredUltraSpeedBoost ??= RimBridgeMainThread.Invoke(
+                () => RestoreUltraSpeedBoost(previousUltraSpeedBoost),
+                timeoutMs: 5000);
             var finalNeverForceNormalSpeed = RimBridgeMainThread.Invoke(() => DebugViewSettings.neverForceNormalSpeed, timeoutMs: 5000);
+            var finalUltraSpeedBoost = RimBridgeMainThread.Invoke(TryReadUltraSpeedBoost, timeoutMs: 5000);
             var finalTimeSpeed = RimBridgeMainThread.Invoke(() => Find.TickManager?.CurTimeSpeed.ToString(), timeoutMs: 5000);
 
             return new
@@ -162,6 +200,10 @@ internal sealed class LifecycleCapabilityModule
                 previousNeverForceNormalSpeed,
                 restoredNeverForceNormalSpeed,
                 finalNeverForceNormalSpeed,
+                ultraSpeedBoostAvailable = UltraSpeedBoostField != null,
+                previousUltraSpeedBoost,
+                restoredUltraSpeedBoost,
+                finalUltraSpeedBoost,
                 finalTimeSpeed,
                 paused = result.PausedAtEnd,
                 initiallyPaused = result.InitiallyPaused,
@@ -184,10 +226,14 @@ internal sealed class LifecycleCapabilityModule
                     restoredNeverForceNormalSpeed = RimBridgeMainThread.Invoke(
                         () => RestoreNeverForceNormalSpeed(previousNeverForceNormalSpeed),
                         timeoutMs: 5000);
+                    restoredUltraSpeedBoost = RimBridgeMainThread.Invoke(
+                        () => RestoreUltraSpeedBoost(previousUltraSpeedBoost),
+                        timeoutMs: 5000);
                 }
                 catch
                 {
                     restoredNeverForceNormalSpeed = null;
+                    restoredUltraSpeedBoost = null;
                 }
             }
 
@@ -198,6 +244,257 @@ internal sealed class LifecycleCapabilityModule
                 forceRequestedSpeed,
                 previousNeverForceNormalSpeed,
                 restoredNeverForceNormalSpeed,
+                ultraSpeedBoostAvailable = UltraSpeedBoostField != null,
+                previousUltraSpeedBoost,
+                restoredUltraSpeedBoost,
+                state = RimWorldState.ToolStateSnapshot()
+            };
+        }
+    }
+
+    public object PlayUntilLetter(int timeoutMs = 1800000, string speed = "Normal", int pollIntervalMs = 250, bool forceRequestedSpeed = false, bool includeExistingLetters = false)
+    {
+        if (timeoutMs < 0)
+        {
+            return new
+            {
+                success = false,
+                message = "timeoutMs cannot be negative.",
+                state = RimWorldState.ToolStateSnapshot()
+            };
+        }
+
+        if (pollIntervalMs < 0)
+        {
+            return new
+            {
+                success = false,
+                message = "pollIntervalMs cannot be negative.",
+                state = RimWorldState.ToolStateSnapshot()
+            };
+        }
+
+        if (Enum.TryParse<TimeSpeed>(speed, ignoreCase: true, out var parsedSpeed) == false)
+        {
+            return new
+            {
+                success = false,
+                message = $"Unknown time speed '{speed}'. Supported values: Normal, Fast, Superfast, Ultrafast.",
+                state = RimWorldState.ToolStateSnapshot()
+            };
+        }
+
+        if (parsedSpeed == TimeSpeed.Paused)
+        {
+            return new
+            {
+                success = false,
+                message = "play_until_letter requires an active play speed. Use Normal, Fast, Superfast, or Ultrafast.",
+                state = RimWorldState.ToolStateSnapshot()
+            };
+        }
+
+        bool? previousNeverForceNormalSpeed = null;
+        bool? restoredNeverForceNormalSpeed = null;
+        bool? previousUltraSpeedBoost = null;
+        bool? restoredUltraSpeedBoost = null;
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            var initialState = RimBridgeMainThread.Invoke(
+                () => CaptureLetterWaitState(new HashSet<string>(StringComparer.Ordinal)),
+                timeoutMs: 5000);
+            if (initialState.Available == false)
+            {
+                return new
+                {
+                    success = false,
+                    message = string.IsNullOrWhiteSpace(initialState.Message) ? "Playback state is unavailable." : initialState.Message,
+                    state = initialState.Snapshot
+                };
+            }
+
+            var baselineLetterIds = includeExistingLetters
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : initialState.LetterIds.ToHashSet(StringComparer.Ordinal);
+
+            if (includeExistingLetters && initialState.MatchingLetters.Count > 0)
+            {
+                RimBridgeMainThread.Invoke(PauseIfNeeded, timeoutMs: 5000);
+                var pausedState = RimBridgeMainThread.Invoke(
+                    () => CaptureLetterWaitState(baselineLetterIds),
+                    timeoutMs: 5000);
+                return CreatePlayUntilLetterResponse(
+                    success: true,
+                    completionReason: "letter",
+                    message: "Found existing letter(s) and paused the game.",
+                    timeoutMs,
+                    elapsedMs: stopwatch.ElapsedMilliseconds,
+                    pollIntervalMs,
+                    parsedSpeed,
+                    forceRequestedSpeed,
+                    includeExistingLetters,
+                    previousNeverForceNormalSpeed,
+                    restoredNeverForceNormalSpeed,
+                    previousUltraSpeedBoost,
+                    restoredUltraSpeedBoost,
+                    finalNeverForceNormalSpeed: null,
+                    finalUltraSpeedBoost: null,
+                    initialState,
+                    finalState: pausedState,
+                    attempts: 1,
+                    probeFailureCount: 0,
+                    lastProbeError: string.Empty,
+                    baselineLetterIds);
+            }
+
+            var startState = initialState;
+            LetterWaitState finalState = initialState;
+            WaitOutcome outcome = null;
+
+            try
+            {
+                RimBridgeMainThread.Invoke(() =>
+                {
+                    if (forceRequestedSpeed && previousNeverForceNormalSpeed == null)
+                    {
+                        previousNeverForceNormalSpeed = DebugViewSettings.neverForceNormalSpeed;
+                        DebugViewSettings.neverForceNormalSpeed = true;
+                        previousUltraSpeedBoost = TrySetUltraSpeedBoost(true);
+                    }
+                    EnsurePlaybackRunning(parsedSpeed);
+                }, timeoutMs: 5000);
+
+                startState = RimBridgeMainThread.Invoke(
+                    () => CaptureLetterWaitState(baselineLetterIds),
+                    timeoutMs: 5000);
+
+                outcome = Waiter.WaitUntil(() =>
+                {
+                    var current = RimBridgeMainThread.Invoke(
+                        () => CaptureLetterWaitState(baselineLetterIds),
+                        timeoutMs: 5000);
+                    var hasNewLetter = current.MatchingLetters.Count > 0;
+                    var sessionChanged = !SameSession(startState.SessionToken, current.SessionToken);
+                    var externalPause = current.Available && current.Paused && !hasNewLetter;
+                    var shouldStop = hasNewLetter || current.Available == false || sessionChanged || externalPause;
+                    var message = BuildLetterWaitProbeMessage(current, hasNewLetter, sessionChanged, externalPause);
+
+                    return new WaitProbeResult
+                    {
+                        IsSatisfied = shouldStop,
+                        Message = message,
+                        Snapshot = current
+                    };
+                }, new WaitOptions
+                {
+                    TimeoutMs = timeoutMs,
+                    PollIntervalMs = NormalizePollIntervalMs(pollIntervalMs),
+                    TimeoutMessage = $"Timed out waiting {timeoutMs}ms for a new letter.",
+                    HandleProbeException = ex => ex is TimeoutException
+                        ? new WaitProbeResult
+                        {
+                            IsSatisfied = false,
+                            Message = "Retrying after main-thread timeout."
+                        }
+                        : null
+                });
+            }
+            finally
+            {
+                try
+                {
+                    RimBridgeMainThread.Invoke(PauseIfNeeded, timeoutMs: 5000);
+                }
+                finally
+                {
+                    if (forceRequestedSpeed)
+                    {
+                        restoredNeverForceNormalSpeed = RimBridgeMainThread.Invoke(
+                            () => RestoreNeverForceNormalSpeed(previousNeverForceNormalSpeed),
+                            timeoutMs: 5000);
+                        restoredUltraSpeedBoost = RimBridgeMainThread.Invoke(
+                            () => RestoreUltraSpeedBoost(previousUltraSpeedBoost),
+                            timeoutMs: 5000);
+                    }
+                }
+
+                finalState = RimBridgeMainThread.Invoke(
+                    () => CaptureLetterWaitState(baselineLetterIds),
+                    timeoutMs: 5000);
+            }
+
+            var finalNeverForceNormalSpeed = RimBridgeMainThread.Invoke(() => DebugViewSettings.neverForceNormalSpeed, timeoutMs: 5000);
+            var finalUltraSpeedBoost = RimBridgeMainThread.Invoke(TryReadUltraSpeedBoost, timeoutMs: 5000);
+            var outcomeState = outcome?.Snapshot as LetterWaitState;
+            var responseState = finalState ?? outcomeState ?? startState;
+            var hasLetter = responseState.MatchingLetters.Count > 0;
+            var completionReason = ResolveLetterWaitCompletionReason(outcome, responseState, hasLetter, startState.SessionToken);
+            var success = hasLetter && (forceRequestedSpeed == false || restoredNeverForceNormalSpeed != null);
+
+            return CreatePlayUntilLetterResponse(
+                success,
+                completionReason,
+                BuildLetterWaitMessage(completionReason, hasLetter, outcome, responseState),
+                timeoutMs,
+                stopwatch.ElapsedMilliseconds,
+                pollIntervalMs,
+                parsedSpeed,
+                forceRequestedSpeed,
+                includeExistingLetters,
+                previousNeverForceNormalSpeed,
+                restoredNeverForceNormalSpeed,
+                previousUltraSpeedBoost,
+                restoredUltraSpeedBoost,
+                finalNeverForceNormalSpeed,
+                finalUltraSpeedBoost,
+                initialState,
+                responseState,
+                outcome?.Attempts ?? 0,
+                outcome?.ProbeFailureCount ?? 0,
+                outcome?.LastProbeError ?? string.Empty,
+                baselineLetterIds);
+        }
+        catch (Exception ex)
+        {
+            if (forceRequestedSpeed && previousNeverForceNormalSpeed != null)
+            {
+                try
+                {
+                    restoredNeverForceNormalSpeed = RimBridgeMainThread.Invoke(
+                        () => RestoreNeverForceNormalSpeed(previousNeverForceNormalSpeed),
+                        timeoutMs: 5000);
+                    restoredUltraSpeedBoost = RimBridgeMainThread.Invoke(
+                        () => RestoreUltraSpeedBoost(previousUltraSpeedBoost),
+                        timeoutMs: 5000);
+                }
+                catch
+                {
+                    restoredNeverForceNormalSpeed = null;
+                    restoredUltraSpeedBoost = null;
+                }
+            }
+
+            try
+            {
+                RimBridgeMainThread.Invoke(PauseIfNeeded, timeoutMs: 5000);
+            }
+            catch
+            {
+                // Keep the original failure as the tool result.
+            }
+
+            return new
+            {
+                success = false,
+                message = $"Failed to play until letter: {ex.Message}",
+                forceRequestedSpeed,
+                previousNeverForceNormalSpeed,
+                restoredNeverForceNormalSpeed,
+                ultraSpeedBoostAvailable = UltraSpeedBoostField != null,
+                previousUltraSpeedBoost,
+                restoredUltraSpeedBoost,
                 state = RimWorldState.ToolStateSnapshot()
             };
         }
@@ -579,6 +876,154 @@ internal sealed class LifecycleCapabilityModule
         };
     }
 
+    private static LetterWaitState CaptureLetterWaitState(ISet<string> baselineLetterIds)
+    {
+        var hasPlayableGame = Current.ProgramState == ProgramState.Playing
+            && Current.Game != null
+            && Find.TickManager != null;
+        var hasLongEvent = LongEventHandler.AnyEventNowOrWaiting;
+        var atMainMenu = GenScene.InEntryScene || Current.ProgramState == ProgramState.Entry;
+        var allLetters = hasPlayableGame
+            ? RimWorldNotifications.GetLettersInDisplayOrder()
+            : [];
+        var baseline = baselineLetterIds ?? new HashSet<string>(StringComparer.Ordinal);
+        var matchingLetters = allLetters
+            .Where(letter => baseline.Contains(letter.GetUniqueLoadID()) == false)
+            .Select(RimWorldNotifications.DescribeLetter)
+            .ToList();
+
+        return new LetterWaitState
+        {
+            Available = hasPlayableGame && !hasLongEvent,
+            Paused = hasPlayableGame && Find.TickManager.Paused,
+            TickCount = hasPlayableGame ? Find.TickManager.TicksGame : 0,
+            SessionToken = Current.Game,
+            Snapshot = RimWorldState.ToolStateSnapshot(),
+            Message = hasPlayableGame
+                ? (hasLongEvent ? "RimWorld is busy with a long event." : string.Empty)
+                : (atMainMenu ? "RimWorld returned to the main menu." : "No playable game is currently loaded."),
+            LetterIds = allLetters.Select(letter => letter.GetUniqueLoadID()).ToList(),
+            MatchingLetters = matchingLetters
+        };
+    }
+
+    private static object CreatePlayUntilLetterResponse(
+        bool success,
+        string completionReason,
+        string message,
+        int timeoutMs,
+        long elapsedMs,
+        int pollIntervalMs,
+        TimeSpeed speed,
+        bool forceRequestedSpeed,
+        bool includeExistingLetters,
+        bool? previousNeverForceNormalSpeed,
+        bool? restoredNeverForceNormalSpeed,
+        bool? previousUltraSpeedBoost,
+        bool? restoredUltraSpeedBoost,
+        bool? finalNeverForceNormalSpeed,
+        bool? finalUltraSpeedBoost,
+        LetterWaitState initialState,
+        LetterWaitState finalState,
+        int attempts,
+        int probeFailureCount,
+        string lastProbeError,
+        ISet<string> baselineLetterIds)
+    {
+        finalState ??= initialState ?? new LetterWaitState
+        {
+            Available = false,
+            Snapshot = RimWorldState.ToolStateSnapshot(),
+            Message = "Letter wait state is unavailable."
+        };
+
+        return new
+        {
+            success,
+            completionReason,
+            message,
+            requestedTimeoutMs = timeoutMs,
+            elapsedMs,
+            pollIntervalMs,
+            timeSpeed = speed.ToString(),
+            forceRequestedSpeed,
+            previousNeverForceNormalSpeed,
+            restoredNeverForceNormalSpeed,
+            finalNeverForceNormalSpeed,
+            ultraSpeedBoostAvailable = UltraSpeedBoostField != null,
+            previousUltraSpeedBoost,
+            restoredUltraSpeedBoost,
+            finalUltraSpeedBoost,
+            includeExistingLetters,
+            paused = finalState.Paused,
+            initiallyPaused = initialState?.Paused ?? false,
+            startTick = initialState?.TickCount ?? 0,
+            endTick = finalState.TickCount,
+            advancedTicks = Math.Max(0L, finalState.TickCount - (initialState?.TickCount ?? finalState.TickCount)),
+            attempts,
+            probeFailureCount,
+            lastProbeError = string.IsNullOrWhiteSpace(lastProbeError) ? null : lastProbeError,
+            baselineLetterCount = baselineLetterIds?.Count ?? 0,
+            baselineLetterIds = baselineLetterIds?.ToList() ?? [],
+            totalLetterCount = finalState.LetterIds.Count,
+            newLetterCount = finalState.MatchingLetters.Count,
+            letters = finalState.MatchingLetters,
+            state = finalState.Snapshot
+        };
+    }
+
+    private static string BuildLetterWaitProbeMessage(LetterWaitState current, bool hasNewLetter, bool sessionChanged, bool externalPause)
+    {
+        if (current.Available == false)
+            return string.IsNullOrWhiteSpace(current.Message) ? "Playback state became unavailable." : current.Message;
+        if (sessionChanged)
+            return "Game session changed before a new letter appeared.";
+        if (hasNewLetter)
+            return $"Detected {current.MatchingLetters.Count} new letter(s).";
+        if (externalPause)
+            return "Game was paused externally before a new letter appeared.";
+
+        return $"Waiting for a new letter. Current letter count: {current.LetterIds.Count}.";
+    }
+
+    private static string ResolveLetterWaitCompletionReason(WaitOutcome outcome, LetterWaitState finalState, bool hasLetter, object startSessionToken)
+    {
+        if (hasLetter)
+            return "letter";
+        if (outcome?.Satisfied != true)
+            return "timeout";
+        if (finalState.Available == false)
+            return "unavailable";
+        if (!SameSession(startSessionToken, finalState.SessionToken))
+            return "session_changed";
+        if (finalState.Paused)
+            return "external_pause";
+
+        return "stopped";
+    }
+
+    private static string BuildLetterWaitMessage(string completionReason, bool hasLetter, WaitOutcome outcome, LetterWaitState finalState)
+    {
+        if (hasLetter)
+            return $"Detected {finalState.MatchingLetters.Count} new letter(s) and paused the game.";
+
+        return completionReason switch
+        {
+            "timeout" => outcome?.Message ?? "Timed out waiting for a new letter.",
+            "external_pause" => "Game was paused externally before a new letter appeared.",
+            "session_changed" => "Game session changed before a new letter appeared.",
+            "unavailable" => string.IsNullOrWhiteSpace(finalState.Message)
+                ? "Playback state became unavailable before a new letter appeared."
+                : finalState.Message,
+            _ => outcome?.Message ?? "Stopped waiting for a new letter."
+        };
+    }
+
+    private static bool SameSession(object left, object right)
+    {
+        return ReferenceEquals(left, right) || Equals(left, right);
+    }
+
     private static WaitOutcome WaitForAutomationMainThread(int timeoutMs, int pollIntervalMs)
     {
         return Waiter.WaitUntil(
@@ -722,5 +1167,26 @@ internal sealed class LifecycleCapabilityModule
 
         DebugViewSettings.neverForceNormalSpeed = previousNeverForceNormalSpeed.Value;
         return DebugViewSettings.neverForceNormalSpeed;
+    }
+
+    private static bool? TryReadUltraSpeedBoost()
+    {
+        return UltraSpeedBoostField?.GetValue(null) as bool?;
+    }
+
+    private static bool? TrySetUltraSpeedBoost(bool value)
+    {
+        var previous = TryReadUltraSpeedBoost();
+        UltraSpeedBoostField?.SetValue(null, value);
+        return previous;
+    }
+
+    private static bool? RestoreUltraSpeedBoost(bool? previousUltraSpeedBoost)
+    {
+        if (previousUltraSpeedBoost == null)
+            return null;
+
+        UltraSpeedBoostField?.SetValue(null, previousUltraSpeedBoost.Value);
+        return TryReadUltraSpeedBoost();
     }
 }

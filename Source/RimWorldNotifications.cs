@@ -335,7 +335,7 @@ internal static class RimWorldNotifications
         return messages;
     }
 
-    private static List<Letter> GetLettersInDisplayOrder()
+    internal static List<Letter> GetLettersInDisplayOrder()
     {
         var letters = Find.LetterStack?.LettersListForReading?
             .Where(letter => letter != null)
@@ -439,7 +439,7 @@ internal static class RimWorldNotifications
         };
     }
 
-    private static object DescribeLetter(Letter letter)
+    internal static object DescribeLetter(Letter letter)
     {
         var currentTick = Find.TickManager?.TicksGame ?? 0;
         var choiceLetter = letter as ChoiceLetter;
