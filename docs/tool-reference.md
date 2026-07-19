@@ -6,9 +6,9 @@ This is the full annotation-driven tool reference. The main README stays beginne
 
 ## Summary
 
-- `124` tools total
+- `125` tools total
 - `18` `rimbridge/*` tools
-- `106` `rimworld/*` tools
+- `107` `rimworld/*` tools
 
 ## `rimbridge/*`
 
@@ -855,9 +855,16 @@ Parameters:
 
 ### `rimworld/get_camera_state`
 
-Get the current map camera position, zoom, and visible rect
+Get the current map camera position, zoom, configured size range, extension opt-in state, and visible rect
 
 Parameters: none.
+
+### `rimworld/set_camera_zoom_extension`
+
+Enable or disable RimBridgeServer's session-only extended camera zoom range; disabled by default
+
+Parameters:
+- `enabled` (`bool`, `required`): True to extend the active camera size range to 0..100 for this session; false to restore the exact range captured when enabled
 
 ### `rimworld/get_screen_targets`
 

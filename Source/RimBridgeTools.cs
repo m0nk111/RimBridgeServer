@@ -958,11 +958,19 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(alertId), alertId)));
     }
 
-    [ReadmeTool("Camera And Screenshots", "Get the current map camera position, zoom, and visible rect")]
-    [Tool("rimworld/get_camera_state", Description = "Get the current map camera position, zoom, and visible rect")]
+    [ReadmeTool("Camera And Screenshots", "Get the current map camera position, zoom, configured size range, extension opt-in state, and visible rect")]
+    [Tool("rimworld/get_camera_state", Description = "Get the current map camera position, zoom, configured size range, extension opt-in state, and visible rect")]
     public object GetCameraState()
     {
         return InvokeAlias();
+    }
+
+    [ReadmeTool("Camera And Screenshots", "Enable or disable RimBridgeServer's session-only extended camera zoom range; disabled by default")]
+    [Tool("rimworld/set_camera_zoom_extension", Description = "Enable or disable RimBridgeServer's session-only extended camera zoom range; disabled by default")]
+    public object SetCameraZoomExtension(
+        [ToolParameter(Description = "True to extend the active camera size range to 0..100 for this session; false to restore the exact range captured when enabled", Required = true)] bool enabled)
+    {
+        return InvokeAlias(Arguments((nameof(enabled), enabled)));
     }
 
     [ReadmeTool("Camera And Screenshots", "Get current screen-space targets such as open windows and active context-menu geometry")]

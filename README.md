@@ -412,7 +412,8 @@ Playback default: RimBridgeServer enables RimWorld's private `TickManager.UltraS
 
 ### Camera And Screenshots
 
-- `rimworld/get_camera_state` - Get the current map camera position, zoom, and visible rect
+- `rimworld/get_camera_state` - Get the current map camera position, zoom, configured size range, extension opt-in state, and visible rect
+- `rimworld/set_camera_zoom_extension` - Enable or disable RimBridgeServer's session-only extended camera zoom range; disabled by default
 - `rimworld/get_screen_targets` - Get current screen-space targets such as open windows and active context-menu geometry
 - `rimworld/get_map_target_info` - Resolve a current-map pawn or thing to its map position and occupied cell rectangle
 - `rimworld/jump_camera_to_pawn` - Jump the camera to a pawn by name or stable pawn id

@@ -100,8 +100,6 @@ internal sealed class ViewCapabilityModule
 
         public float RootSize { get; set; }
 
-        public FloatRange SizeRange { get; set; }
-
         public object Payload { get; set; }
     }
 
@@ -154,9 +152,31 @@ internal sealed class ViewCapabilityModule
         return RimWorldState.DescribeCamera();
     }
 
+    public object SetCameraZoomExtension(bool enabled)
+    {
+        var change = RimBridgeCameraConfig.SetZoomExtension(enabled);
+        return new
+        {
+            success = true,
+            changed = change.Changed,
+            previousEnabled = change.PreviousEnabled,
+            enabled = change.Enabled,
+            previousSizeRange = DescribeSizeRange(change.PreviousSizeRange),
+            sizeRange = DescribeSizeRange(change.SizeRange),
+            rootSize = change.RootSize,
+            rootSizeClamped = change.RootSizeClamped,
+            camera = RimWorldState.DescribeCamera()
+        };
+    }
+
     public object GetScreenTargets()
     {
         return RimWorldTargeting.GetScreenTargetsResponse();
+    }
+
+    private static object DescribeSizeRange(FloatRange range)
+    {
+        return new { min = range.min, max = range.max };
     }
 
     public object GetMapTargetInfo(string thingId = null, string pawnName = null, string pawnId = null)
@@ -819,14 +839,12 @@ internal sealed class ViewCapabilityModule
         {
             MapPosition = driver.MapPosition,
             RootSize = driver.RootSize,
-            SizeRange = driver.config.sizeRange,
             Payload = RimWorldState.DescribeCamera()
         };
     }
 
     private static void RestoreCamera(CameraSnapshot snapshot)
     {
-        Find.CameraDriver.config.sizeRange = snapshot.SizeRange;
         Find.CameraDriver.SetRootPosAndSize(new Vector3(snapshot.MapPosition.x, 0f, snapshot.MapPosition.z), snapshot.RootSize);
     }
 

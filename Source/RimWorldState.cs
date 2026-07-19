@@ -288,6 +288,7 @@ internal static class RimWorldState
     {
         var driver = Find.CameraDriver;
         var currentMap = Find.CurrentMap;
+        var sizeRange = driver.config.sizeRange;
 
         return new
         {
@@ -298,6 +299,8 @@ internal static class RimWorldState
             rootSize = driver.RootSize,
             zoomRootSize = driver.ZoomRootSize,
             zoomRange = driver.CurrentZoom.ToString(),
+            sizeRange = new { min = sizeRange.min, max = sizeRange.max },
+            cameraZoomExtensionEnabled = RimBridgeCameraConfig.CameraZoomExtensionEnabled,
             mapPosition = new { x = driver.MapPosition.x, z = driver.MapPosition.z },
             viewRect = new
             {

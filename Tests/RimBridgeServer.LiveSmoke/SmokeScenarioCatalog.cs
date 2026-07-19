@@ -35,6 +35,7 @@ internal static class SmokeScenarioCatalog
     public const string SemanticDiagnosticsRoundTripScenarioName = "semantic-diagnostics-roundtrip";
     public const string ModConfigurationRoundTripScenarioName = "mod-configuration-roundtrip";
     public const string TimeSpeedBoostRoundTripScenarioName = "time-speed-boost-roundtrip";
+    public const string CameraZoomExtensionRoundTripScenarioName = "camera-zoom-extension-roundtrip";
     public const string MainTabNavigationScenarioName = "main-tab-navigation";
     public const string UiLayoutRoundTripScenarioName = "ui-layout-roundtrip";
     public const string SaveLoadRoundTripScenarioName = "save-load-roundtrip";
@@ -154,6 +155,12 @@ internal static class SmokeScenarioCatalog
                 Name = TimeSpeedBoostRoundTripScenarioName,
                 Description = "Flip RimWorld's private ultrafast speed boost in both directions, verify each response reports the post-update value, and restore the original boost state.",
                 RunAsync = RunTimeSpeedBoostRoundTripAsync
+            },
+            [CameraZoomExtensionRoundTripScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = CameraZoomExtensionRoundTripScenarioName,
+                Description = "Verify the extended camera zoom range is opt-in, survives rendered frames only while enabled, and restores the exact session baseline range when disabled.",
+                RunAsync = RunCameraZoomExtensionRoundTripAsync
             },
             [MainTabNavigationScenarioName] = new SmokeScenarioDefinition
             {
@@ -743,6 +750,284 @@ internal static class SmokeScenarioCatalog
         var current = JsonNodeHelpers.ReadBoolean(response, "currentUltraSpeedBoost");
         if (current != expectedCurrent)
             throw new InvalidOperationException($"{action} reported currentUltraSpeedBoost={current?.ToString() ?? "null"} instead of the post-update value {expectedCurrent}.");
+    }
+
+    private static async Task RunCameraZoomExtensionRoundTripAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        await context.EnsurePlayableGameAsync(cancellationToken);
+        await context.WaitForLongEventIdleAsync("camera_zoom_extension.wait_for_long_event_idle", cancellationToken);
+
+        var observationWindow = await context.BeginObservationWindowAsync("camera_zoom_extension.snapshot_bridge_status", cancellationToken);
+        double? baselineRangeMinimum = null;
+        double? baselineRangeMaximum = null;
+        double? baselineRootSize = null;
+
+        try
+        {
+            var baseline = await context.CallGameToolAsync("camera_zoom_extension.read_baseline", "rimworld/get_camera_state", new { }, cancellationToken);
+            context.EnsureSucceeded(baseline, "Reading the baseline camera state");
+
+            if (JsonNodeHelpers.ReadBoolean(baseline.StructuredContent, "cameraZoomExtensionEnabled") != false)
+                throw new InvalidOperationException("The camera zoom extension was enabled before it was explicitly requested.");
+
+            baselineRangeMinimum = ReadRequiredCameraNumber(baseline.StructuredContent, "Reading the baseline camera state", "sizeRange", "min");
+            baselineRangeMaximum = ReadRequiredCameraNumber(baseline.StructuredContent, "Reading the baseline camera state", "sizeRange", "max");
+            baselineRootSize = ReadRequiredCameraNumber(baseline.StructuredContent, "Reading the baseline camera state", "rootSize");
+            if (baselineRangeMaximum.Value < baselineRangeMinimum.Value)
+                throw new InvalidOperationException("The baseline camera size range reported a maximum below its minimum.");
+
+            context.SetScenarioData("baseline", baseline.StructuredContent);
+
+            await WaitForRenderedCameraFramesAsync(
+                context,
+                "camera_zoom_extension.baseline_frames",
+                baseline.StructuredContent,
+                baselineRootSize.Value,
+                cancellationToken);
+
+            var baselineAfterFrames = await context.CallGameToolAsync("camera_zoom_extension.read_baseline_after_frames", "rimworld/get_camera_state", new { }, cancellationToken);
+            context.EnsureSucceeded(baselineAfterFrames, "Reading the default camera state after rendered frames");
+            AssertCameraZoomExtensionState(
+                baselineAfterFrames.StructuredContent,
+                expectedEnabled: false,
+                baselineRangeMinimum.Value,
+                baselineRangeMaximum.Value,
+                baselineRootSize.Value,
+                "The default camera state after rendered frames");
+
+            var enableExtension = await context.CallGameToolAsync("camera_zoom_extension.enable", "rimworld/set_camera_zoom_extension", new
+            {
+                enabled = true
+            }, cancellationToken);
+            context.EnsureSucceeded(enableExtension, "Enabling the extended camera zoom range");
+            AssertCameraZoomExtensionTransition(
+                enableExtension.StructuredContent,
+                expectedChanged: true,
+                expectedPreviousEnabled: false,
+                expectedEnabled: true,
+                expectedPreviousMinimum: baselineRangeMinimum.Value,
+                expectedPreviousMaximum: baselineRangeMaximum.Value,
+                expectedMinimum: 0d,
+                expectedMaximum: 100d,
+                expectedRootSize: baselineRootSize.Value,
+                expectedRootSizeClamped: false,
+                "Enabling the camera zoom extension");
+
+            var enabledCamera = JsonNodeHelpers.GetPath(enableExtension.StructuredContent, "camera")
+                ?? throw new InvalidOperationException("Enabling the camera zoom extension did not return the resulting camera state.");
+            await WaitForRenderedCameraFramesAsync(
+                context,
+                "camera_zoom_extension.enabled_frames",
+                enabledCamera,
+                baselineRootSize.Value,
+                cancellationToken);
+
+            var enabledAfterFrames = await context.CallGameToolAsync("camera_zoom_extension.read_enabled_after_frames", "rimworld/get_camera_state", new { }, cancellationToken);
+            context.EnsureSucceeded(enabledAfterFrames, "Reading the enabled camera extension state after rendered frames");
+            AssertCameraZoomExtensionState(
+                enabledAfterFrames.StructuredContent,
+                expectedEnabled: true,
+                expectedMinimum: 0d,
+                expectedMaximum: 100d,
+                expectedRootSize: baselineRootSize.Value,
+                "The enabled camera extension state after rendered frames");
+
+            var setExtendedRootSize = await context.CallGameToolAsync("camera_zoom_extension.set_extended_root_size", "rimworld/set_camera_zoom", new
+            {
+                rootSize = 100d
+            }, cancellationToken);
+            context.EnsureSucceeded(setExtendedRootSize, "Setting the camera root size to the extended maximum");
+            var extendedRootSize = ReadRequiredCameraNumber(setExtendedRootSize.StructuredContent, "Setting the camera root size to the extended maximum", "rootSize");
+            if (extendedRootSize != 100d)
+                throw new InvalidOperationException($"Setting the extended camera root size to 100 reported {extendedRootSize} instead.");
+
+            var disableExtension = await context.CallGameToolAsync("camera_zoom_extension.disable", "rimworld/set_camera_zoom_extension", new
+            {
+                enabled = false
+            }, cancellationToken);
+            context.EnsureSucceeded(disableExtension, "Disabling the extended camera zoom range");
+            var expectedRestoredRootSize = Math.Clamp(100d, baselineRangeMinimum.Value, baselineRangeMaximum.Value);
+            AssertCameraZoomExtensionTransition(
+                disableExtension.StructuredContent,
+                expectedChanged: true,
+                expectedPreviousEnabled: true,
+                expectedEnabled: false,
+                expectedPreviousMinimum: 0d,
+                expectedPreviousMaximum: 100d,
+                expectedMinimum: baselineRangeMinimum.Value,
+                expectedMaximum: baselineRangeMaximum.Value,
+                expectedRootSize: expectedRestoredRootSize,
+                expectedRootSizeClamped: expectedRestoredRootSize != 100d,
+                "Disabling the camera zoom extension");
+
+            var disabledCamera = JsonNodeHelpers.GetPath(disableExtension.StructuredContent, "camera")
+                ?? throw new InvalidOperationException("Disabling the camera zoom extension did not return the resulting camera state.");
+            await WaitForRenderedCameraFramesAsync(
+                context,
+                "camera_zoom_extension.disabled_frames",
+                disabledCamera,
+                expectedRestoredRootSize,
+                cancellationToken);
+
+            var disabledAfterFrames = await context.CallGameToolAsync("camera_zoom_extension.read_disabled_after_frames", "rimworld/get_camera_state", new { }, cancellationToken);
+            context.EnsureSucceeded(disabledAfterFrames, "Reading the disabled camera extension state after rendered frames");
+            AssertCameraZoomExtensionState(
+                disabledAfterFrames.StructuredContent,
+                expectedEnabled: false,
+                baselineRangeMinimum.Value,
+                baselineRangeMaximum.Value,
+                expectedRestoredRootSize,
+                "The disabled camera extension state after rendered frames");
+
+            context.SetSummaryValue("baselineSizeRange", $"{baselineRangeMinimum.Value}..{baselineRangeMaximum.Value}");
+            context.SetSummaryValue("baselineRootSize", baselineRootSize.Value.ToString());
+            context.SetSummaryValue("extendedSizeRange", "0..100");
+            context.SetSummaryValue("disabledRootSize", expectedRestoredRootSize.ToString());
+            context.SetSummaryValue("stableAfterRenderedFrames", "true");
+            context.SetScenarioData("baselineAfterFrames", baselineAfterFrames.StructuredContent);
+            context.SetScenarioData("enableExtension", enableExtension.StructuredContent);
+            context.SetScenarioData("enabledAfterFrames", enabledAfterFrames.StructuredContent);
+            context.SetScenarioData("setExtendedRootSize", setExtendedRootSize.StructuredContent);
+            context.SetScenarioData("disableExtension", disableExtension.StructuredContent);
+            context.SetScenarioData("disabledAfterFrames", disabledAfterFrames.StructuredContent);
+        }
+        finally
+        {
+            try
+            {
+                var cleanupDisable = await context.CallGameToolAsync("camera_zoom_extension.cleanup_disable", "rimworld/set_camera_zoom_extension", new
+                {
+                    enabled = false
+                }, cancellationToken);
+                context.SetScenarioData("cleanupDisableExtension", cleanupDisable.StructuredContent);
+                if (!cleanupDisable.Success || JsonNodeHelpers.ReadBoolean(cleanupDisable.StructuredContent, "enabled") != false)
+                    context.Note("Cleanup warning: disabling the camera zoom extension did not report enabled=false.");
+            }
+            catch (Exception ex)
+            {
+                context.Note($"Cleanup warning: disabling the camera zoom extension failed: {ex.Message}");
+            }
+
+            if (baselineRootSize.HasValue)
+            {
+                try
+                {
+                    var cleanupRootSize = await context.CallGameToolAsync("camera_zoom_extension.cleanup_restore_root_size", "rimworld/set_camera_zoom", new
+                    {
+                        rootSize = baselineRootSize.Value
+                    }, cancellationToken);
+                    context.SetScenarioData("cleanupRestoreRootSize", cleanupRootSize.StructuredContent);
+                    if (!cleanupRootSize.Success
+                        || ReadRequiredCameraNumber(cleanupRootSize.StructuredContent, "Restoring the baseline camera root size", "rootSize") != baselineRootSize.Value)
+                    {
+                        context.Note($"Cleanup warning: restoring the baseline camera root size to {baselineRootSize.Value} did not succeed.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    context.Note($"Cleanup warning: restoring the baseline camera root size failed: {ex.Message}");
+                }
+            }
+        }
+
+        var observation = await observationWindow.CaptureAsync(
+            "camera_zoom_extension.final_bridge_status",
+            "camera_zoom_extension.collect_operation_events",
+            "camera_zoom_extension.collect_logs",
+            cancellationToken);
+        context.ApplyObservationWindow(observation);
+    }
+
+    private static async Task WaitForRenderedCameraFramesAsync(
+        SmokeScenarioContext context,
+        string stepName,
+        JsonNode? camera,
+        double rootSize,
+        CancellationToken cancellationToken)
+    {
+        var mapX = ReadRequiredCameraNumber(camera, "Preparing to wait for rendered camera frames", "mapPosition", "x");
+        var mapZ = ReadRequiredCameraNumber(camera, "Preparing to wait for rendered camera frames", "mapPosition", "z");
+        var cellX = Math.Max(0, checked((int)Math.Floor(mapX)));
+        var cellZ = Math.Max(0, checked((int)Math.Floor(mapZ)));
+
+        var frame = await context.CallGameToolAsync(stepName, "rimworld/frame_cell_rect", new
+        {
+            x = cellX,
+            z = cellZ,
+            width = 1,
+            height = 1,
+            paddingCells = 0,
+            rootSize
+        }, cancellationToken);
+        context.EnsureSucceeded(frame, "Waiting for two rendered camera frames");
+    }
+
+    private static void AssertCameraZoomExtensionTransition(
+        JsonNode? response,
+        bool expectedChanged,
+        bool expectedPreviousEnabled,
+        bool expectedEnabled,
+        double expectedPreviousMinimum,
+        double expectedPreviousMaximum,
+        double expectedMinimum,
+        double expectedMaximum,
+        double expectedRootSize,
+        bool expectedRootSizeClamped,
+        string action)
+    {
+        if (JsonNodeHelpers.ReadBoolean(response, "changed") != expectedChanged)
+            throw new InvalidOperationException($"{action} did not report changed={expectedChanged}.");
+        if (JsonNodeHelpers.ReadBoolean(response, "previousEnabled") != expectedPreviousEnabled)
+            throw new InvalidOperationException($"{action} did not report previousEnabled={expectedPreviousEnabled}.");
+        if (JsonNodeHelpers.ReadBoolean(response, "enabled") != expectedEnabled)
+            throw new InvalidOperationException($"{action} did not report enabled={expectedEnabled}.");
+
+        AssertExactCameraRange(response, "previousSizeRange", expectedPreviousMinimum, expectedPreviousMaximum, action);
+        AssertExactCameraRange(response, "sizeRange", expectedMinimum, expectedMaximum, action);
+
+        var rootSize = ReadRequiredCameraNumber(response, action, "rootSize");
+        if (rootSize != expectedRootSize)
+            throw new InvalidOperationException($"{action} reported rootSize={rootSize} instead of {expectedRootSize}.");
+        if (JsonNodeHelpers.ReadBoolean(response, "rootSizeClamped") != expectedRootSizeClamped)
+            throw new InvalidOperationException($"{action} did not report rootSizeClamped={expectedRootSizeClamped}.");
+
+        var camera = JsonNodeHelpers.GetPath(response, "camera")
+            ?? throw new InvalidOperationException($"{action} did not return the resulting camera state.");
+        AssertCameraZoomExtensionState(camera, expectedEnabled, expectedMinimum, expectedMaximum, expectedRootSize, action);
+    }
+
+    private static void AssertCameraZoomExtensionState(
+        JsonNode? camera,
+        bool expectedEnabled,
+        double expectedMinimum,
+        double expectedMaximum,
+        double expectedRootSize,
+        string action)
+    {
+        if (JsonNodeHelpers.ReadBoolean(camera, "cameraZoomExtensionEnabled") != expectedEnabled)
+            throw new InvalidOperationException($"{action} did not report cameraZoomExtensionEnabled={expectedEnabled}.");
+
+        AssertExactCameraRange(camera, "sizeRange", expectedMinimum, expectedMaximum, action);
+        var rootSize = ReadRequiredCameraNumber(camera, action, "rootSize");
+        if (rootSize != expectedRootSize)
+            throw new InvalidOperationException($"{action} reported rootSize={rootSize} instead of {expectedRootSize}.");
+    }
+
+    private static void AssertExactCameraRange(JsonNode? node, string propertyName, double expectedMinimum, double expectedMaximum, string action)
+    {
+        var minimum = ReadRequiredCameraNumber(node, action, propertyName, "min");
+        var maximum = ReadRequiredCameraNumber(node, action, propertyName, "max");
+        if (minimum != expectedMinimum || maximum != expectedMaximum)
+        {
+            throw new InvalidOperationException(
+                $"{action} reported {propertyName}={minimum}..{maximum} instead of {expectedMinimum}..{expectedMaximum}.");
+        }
+    }
+
+    private static double ReadRequiredCameraNumber(JsonNode? node, string action, params string[] path)
+    {
+        return JsonNodeHelpers.ReadDouble(node, path)
+            ?? throw new InvalidOperationException($"{action} did not report the required numeric field '{string.Join(".", path)}'.");
     }
 
     private static async Task RunMainTabNavigationAsync(SmokeScenarioContext context, CancellationToken cancellationToken)

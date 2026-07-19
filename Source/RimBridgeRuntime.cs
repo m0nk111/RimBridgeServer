@@ -113,6 +113,9 @@ internal static class Root_Update_Patch
 {
     public static void Postfix()
     {
+        if (PlayDataLoader.Loaded && !LongEventHandler.AnyEventNowOrWaiting && Find.UIRoot != null)
+            RimBridgeCameraConfig.MaintainZoomExtension();
+
         RimBridgeMainThread.Pump();
         RimBridgeAsyncScheduler.Pump();
         RimWorldTickStepper.AdvanceFromRootUpdate(Time.frameCount);
@@ -124,7 +127,6 @@ internal static class Root_Update_Patch
         RimWorldHover.ClearExpiredHoverTarget();
         if (PlayDataLoader.Loaded && !LongEventHandler.AnyEventNowOrWaiting && Find.UIRoot != null)
         {
-            RimBridgeCameraConfig.KeepFullZoomRange();
             RimBridgeStartup.OnRuntimeReady();
         }
     }

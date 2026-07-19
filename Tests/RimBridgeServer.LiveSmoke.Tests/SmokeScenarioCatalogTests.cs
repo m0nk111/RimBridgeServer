@@ -27,6 +27,7 @@ public class SmokeScenarioCatalogTests
         Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.SemanticDiagnosticsRoundTripScenarioName);
         Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.ModConfigurationRoundTripScenarioName);
         Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.TimeSpeedBoostRoundTripScenarioName);
+        Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.CameraZoomExtensionRoundTripScenarioName);
         Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.SaveLoadRoundTripScenarioName);
         Assert.Contains(scenarios, scenario => scenario.Name == SmokeScenarioCatalog.ScreenshotCaptureScenarioName);
     }
