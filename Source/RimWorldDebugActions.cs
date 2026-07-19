@@ -17,6 +17,17 @@ internal static class RimWorldDebugActions
         public UiStateSnapshot UiState { get; set; }
 
         public long LogSequence { get; set; }
+
+        public DebugTool DebugTool { get; set; }
+    }
+
+    private sealed class MapTargetResolution
+    {
+        public IntVec3 Cell { get; set; } = IntVec3.Invalid;
+
+        public Thing Thing { get; set; }
+
+        public string Kind => Thing == null ? "cell" : "thing";
     }
 
     public static object ListDebugActionRootsResponse(bool includeHidden = false)
@@ -122,7 +133,13 @@ internal static class RimWorldDebugActions
         };
     }
 
-    public static object ExecuteDebugActionResponse(string path, string pawnName = null, string pawnId = null)
+    public static object ExecuteDebugActionResponse(
+        string path,
+        string pawnName = null,
+        string pawnId = null,
+        int? x = null,
+        int? z = null,
+        string thingId = null)
     {
         if (!TryResolveNode(path, out var node, out var normalizedPath, out var error))
             return Failure(error);
@@ -146,6 +163,7 @@ internal static class RimWorldDebugActions
         }
 
         Pawn targetPawn = null;
+        MapTargetResolution mapTarget = null;
         if (assessment.Kind == DebugActionExecutionKind.PawnTarget)
         {
             if (string.IsNullOrWhiteSpace(pawnName) && string.IsNullOrWhiteSpace(pawnId))
@@ -178,6 +196,22 @@ internal static class RimWorldDebugActions
                 };
             }
         }
+        else if (assessment.Kind == DebugActionExecutionKind.MapTarget)
+        {
+            if (!TryResolveMapTarget(x, z, thingId, out mapTarget, out var mapTargetError))
+            {
+                return new
+                {
+                    success = false,
+                    message = $"Could not resolve map target for debug action '{normalizedPath}': {mapTargetError}",
+                    path = normalizedPath,
+                    node = DescribeNode(node),
+                    requiredTargetKind = "map",
+                    mapTarget = (object)null,
+                    state = RimWorldState.ToolStateSnapshot()
+                };
+            }
+        }
 
         var before = CaptureExecution();
 
@@ -186,6 +220,19 @@ internal static class RimWorldDebugActions
             if (assessment.Kind == DebugActionExecutionKind.PawnTarget)
             {
                 node.pawnAction?.Invoke(targetPawn);
+            }
+            else if (assessment.Kind == DebugActionExecutionKind.MapTarget)
+            {
+                var pointerToken = RimBridgeVirtualPointer.PushTransientOverride(
+                    RimWorldState.CellCenter(mapTarget.Cell).MapToUIPosition());
+                try
+                {
+                    node.action?.Invoke();
+                }
+                finally
+                {
+                    RimBridgeVirtualPointer.PopTransientOverride(pointerToken);
+                }
             }
             else
             {
@@ -204,9 +251,11 @@ internal static class RimWorldDebugActions
                 path = normalizedPath,
                 node = DescribeNode(node),
                 targetPawn = targetPawn == null ? null : RimWorldState.DescribePawn(targetPawn),
+                mapTarget = DescribeMapTarget(mapTarget),
                 stateBefore = before.State,
                 stateAfter = after.State,
-                effects = DescribeEffects(before, after)
+                effects = DescribeEffects(before, after),
+                followUp = DescribeMapTargetFollowUp(before, after)
             };
         }
 
@@ -218,9 +267,11 @@ internal static class RimWorldDebugActions
             path = normalizedPath,
             node = DescribeNode(node),
             targetPawn = targetPawn == null ? null : RimWorldState.DescribePawn(targetPawn),
+            mapTarget = DescribeMapTarget(mapTarget),
             stateBefore = before.State,
             stateAfter = completed.State,
-            effects = DescribeEffects(before, completed)
+            effects = DescribeEffects(before, completed),
+            followUp = DescribeMapTargetFollowUp(before, completed)
         };
     }
 
@@ -649,13 +700,122 @@ internal static class RimWorldDebugActions
         };
     }
 
+    private static bool TryResolveMapTarget(
+        int? x,
+        int? z,
+        string thingId,
+        out MapTargetResolution target,
+        out string error)
+    {
+        target = null;
+        error = string.Empty;
+        var hasThingId = string.IsNullOrWhiteSpace(thingId) == false;
+        var hasAnyCoordinate = x.HasValue || z.HasValue;
+
+        if (hasThingId && hasAnyCoordinate)
+        {
+            error = "Provide either thingId or both x and z, not both target forms.";
+            return false;
+        }
+
+        if (hasThingId)
+        {
+            try
+            {
+                var map = RimWorldState.CurrentMapOrThrow();
+                var thing = RimWorldState.ResolveCurrentMapThing(thingId);
+                if (!thing.Spawned || thing.Map != map || !thing.Position.InBounds(map))
+                {
+                    error = $"Thing '{thingId.Trim()}' is not spawned at a valid cell on the current map.";
+                    return false;
+                }
+
+                target = new MapTargetResolution
+                {
+                    Cell = thing.Position,
+                    Thing = thing
+                };
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        if (x.HasValue != z.HasValue)
+        {
+            error = "Both x and z are required when targeting a map cell.";
+            return false;
+        }
+
+        if (!x.HasValue)
+        {
+            error = "Provide thingId or both x and z.";
+            return false;
+        }
+
+        try
+        {
+            var map = RimWorldState.CurrentMapOrThrow();
+            var cell = new IntVec3(x.Value, 0, z.Value);
+            if (!cell.InBounds(map))
+            {
+                error = $"Cell ({cell.x}, {cell.z}) is out of bounds for the current map.";
+                return false;
+            }
+
+            target = new MapTargetResolution
+            {
+                Cell = cell
+            };
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static object DescribeMapTarget(MapTargetResolution target)
+    {
+        if (target == null)
+            return null;
+
+        return new
+        {
+            kind = target.Kind,
+            cell = new { x = target.Cell.x, z = target.Cell.z },
+            thingId = RimWorldState.GetThingId(target.Thing),
+            thing = target.Thing == null ? null : RimWorldState.DescribeThing(target.Thing),
+            thingTargetIsPositional = target.Thing != null
+        };
+    }
+
+    private static object DescribeMapTargetFollowUp(ExecutionCapture before, ExecutionCapture after)
+    {
+        if (after?.DebugTool == null || ReferenceEquals(before?.DebugTool, after.DebugTool))
+            return null;
+
+        return new
+        {
+            required = true,
+            targetKind = "map",
+            tool = "rimworld/click_cell",
+            message = "The debug action opened another map-target stage. Use rimworld/click_cell to provide its next target."
+        };
+    }
+
     private static ExecutionCapture CaptureExecution()
     {
         return new ExecutionCapture
         {
             State = RimWorldState.ToolStateSnapshot(),
             UiState = RimWorldInput.GetUiState(),
-            LogSequence = RimBridgeCapabilities.LogJournal?.LatestSequence ?? 0
+            LogSequence = RimBridgeCapabilities.LogJournal?.LatestSequence ?? 0,
+            DebugTool = DebugTools.curTool
         };
     }
 
@@ -676,7 +836,10 @@ internal static class RimWorldDebugActions
             }).ToList(),
             windowCountDelta = after.UiState.WindowCount - before.UiState.WindowCount,
             openedWindowTypes = GetOpenedWindowTypes(before.UiState, after.UiState),
-            closedWindowTypes = GetClosedWindowTypes(before.UiState, after.UiState)
+            closedWindowTypes = GetClosedWindowTypes(before.UiState, after.UiState),
+            debugToolActiveBefore = before.DebugTool != null,
+            debugToolActiveAfter = after.DebugTool != null,
+            debugToolChanged = ReferenceEquals(before.DebugTool, after.DebugTool) == false
         };
     }
 

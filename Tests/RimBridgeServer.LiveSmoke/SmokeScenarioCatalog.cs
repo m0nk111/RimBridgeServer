@@ -21,6 +21,7 @@ internal static class SmokeScenarioCatalog
     public const string DebugGameLoadScenarioName = "debug-game-load";
     public const string ContextMenuCancelRoundTripScenarioName = "context-menu-cancel-roundtrip";
     public const string DebugActionDiscoveryScenarioName = "debug-action-discovery";
+    public const string DebugActionMapTargetScenarioName = "debug-action-map-target";
     public const string DebugActionPawnTargetScenarioName = "debug-action-pawn-target";
     public const string ArchitectFloorDropdownScenarioName = "architect-floor-dropdown";
     public const string ArchitectStatefulTargetingScenarioName = "architect-stateful-targeting";
@@ -69,6 +70,12 @@ internal static class SmokeScenarioCatalog
                 Name = DebugActionDiscoveryScenarioName,
                 Description = "Ensure a playable game exists, discover debug-action roots and children, then execute one low-side-effect direct leaf action by stable path.",
                 RunAsync = RunDebugActionDiscoveryAsync
+            },
+            [DebugActionMapTargetScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = DebugActionMapTargetScenarioName,
+                Description = "Ensure a playable game exists, discover a non-destructive map-target debug action, then execute it at both a supplied cell and a supplied thing id.",
+                RunAsync = RunDebugActionMapTargetAsync
             },
             [DebugActionPawnTargetScenarioName] = new SmokeScenarioDefinition
             {
@@ -361,6 +368,96 @@ internal static class SmokeScenarioCatalog
             "debug_actions.final_bridge_status",
             "debug_actions.collect_operation_events",
             "debug_actions.collect_logs",
+            cancellationToken);
+        context.ApplyObservationWindow(observation);
+    }
+
+    private static async Task RunDebugActionMapTargetAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        const string actionLabel = "Log lights affecting cell";
+
+        await context.EnsurePlayableGameAsync(cancellationToken);
+        await context.WaitForLongEventIdleAsync("debug_actions_map.wait_for_long_event_idle", cancellationToken);
+
+        var observationWindow = await context.BeginObservationWindowAsync("debug_actions_map.snapshot_bridge_status", cancellationToken);
+
+        var search = await context.CallGameToolAsync("debug_actions_map.search", "rimworld/search_debug_actions", new
+        {
+            query = actionLabel,
+            limit = 10,
+            includeHidden = false,
+            supportedOnly = true,
+            requiredTargetKind = "map"
+        }, cancellationToken);
+        context.EnsureSucceeded(search, $"Searching globally for the {actionLabel} debug action");
+
+        var matches = JsonNodeHelpers.ReadArray(search.StructuredContent, "matches");
+        var actionMatch = matches.FirstOrDefault(match =>
+            string.Equals(JsonNodeHelpers.ReadString(match, "node", "source", "name"), actionLabel, StringComparison.Ordinal));
+        if (actionMatch is null)
+            throw new InvalidOperationException($"Debug-action search did not return an exact supported map-target match for '{actionLabel}'.");
+
+        var actionPath = ReadRequiredString(actionMatch, "path");
+        AssertMapTargetDebugActionNode(JsonNodeHelpers.GetPath(actionMatch, "node"), actionPath);
+
+        var actionNode = await context.CallGameToolAsync("debug_actions_map.get_action", "rimworld/get_debug_action", new
+        {
+            path = actionPath,
+            includeChildren = false
+        }, cancellationToken);
+        context.EnsureSucceeded(actionNode, $"Reading debug-action metadata for '{actionPath}'");
+        AssertMapTargetDebugActionNode(JsonNodeHelpers.GetPath(actionNode.StructuredContent, "node"), actionPath);
+
+        var colonists = await context.CallGameToolAsync("debug_actions_map.list_colonists", "rimworld/list_colonists", new
+        {
+            currentMapOnly = true
+        }, cancellationToken);
+        context.EnsureSucceeded(colonists, "Listing current-map colonists for the map-target debug-action scenario");
+
+        var colonist = ResolveFirstColonist(colonists.StructuredContent);
+        var pawnId = ReadRequiredString(colonist, "pawnId");
+        var x = JsonNodeHelpers.ReadInt32(colonist, "position", "x")
+            ?? throw new InvalidOperationException($"Colonist '{pawnId}' did not report a map x coordinate.");
+        var z = JsonNodeHelpers.ReadInt32(colonist, "position", "z")
+            ?? throw new InvalidOperationException($"Colonist '{pawnId}' did not report a map z coordinate.");
+        context.Report.ColonistCount = JsonNodeHelpers.ReadInt32(colonists.StructuredContent, "count");
+
+        var cellExecution = await context.CallGameToolAsync("debug_actions_map.execute_cell", "rimworld/execute_debug_action", new
+        {
+            path = actionPath,
+            x,
+            z
+        }, cancellationToken);
+        context.EnsureSucceeded(cellExecution, $"Executing '{actionPath}' at cell ({x}, {z})");
+        AssertMapTargetDebugActionExecution(cellExecution, actionPath, "cell", x, z, expectedThingId: null);
+
+        var thingExecution = await context.CallGameToolAsync("debug_actions_map.execute_thing", "rimworld/execute_debug_action", new
+        {
+            path = actionPath,
+            thingId = pawnId
+        }, cancellationToken);
+        context.EnsureSucceeded(thingExecution, $"Executing '{actionPath}' against thing '{pawnId}'");
+        AssertMapTargetDebugActionExecution(thingExecution, actionPath, "thing", x, z, pawnId);
+
+        var finalStatus = await context.CallGameToolAsync("debug_actions_map.final_bridge_status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+        context.EnsureSucceeded(finalStatus, "Checking bridge status after both map-target debug actions");
+        if (JsonNodeHelpers.ReadBoolean(finalStatus.StructuredContent, "state", "automationReady") != true)
+            throw new InvalidOperationException("The game was no longer automation-ready after executing both map-target debug actions.");
+
+        context.SetSummaryValue("actionPath", actionPath);
+        context.SetSummaryValue("targetPawnId", pawnId);
+        context.SetSummaryValue("targetCell", $"{x},{z}");
+        context.SetSummaryValue("searchMatchCount", matches.Count.ToString());
+        context.SetScenarioData("search", search.StructuredContent);
+        context.SetScenarioData("actionNode", actionNode.StructuredContent);
+        context.SetScenarioData("cellExecution", cellExecution.StructuredContent);
+        context.SetScenarioData("thingExecution", thingExecution.StructuredContent);
+        context.SetScenarioData("finalBridgeState", JsonNodeHelpers.GetPath(finalStatus.StructuredContent, "state"));
+
+        var observation = await observationWindow.CaptureAsync(
+            "debug_actions_map.observation_final_bridge_status",
+            "debug_actions_map.collect_operation_events",
+            "debug_actions_map.collect_logs",
             cancellationToken);
         context.ApplyObservationWindow(observation);
     }
@@ -4694,6 +4791,67 @@ internal static class SmokeScenarioCatalog
         }
 
         throw new InvalidOperationException($"Could not resolve debug action '{preferredPath}' from the returned search matches.");
+    }
+
+    private static void AssertMapTargetDebugActionNode(JsonNode? node, string actionPath)
+    {
+        var executionKind = JsonNodeHelpers.ReadString(node, "execution", "kind");
+        if (!string.Equals(executionKind, "MapTarget", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Debug action '{actionPath}' reported execution kind '{executionKind}' instead of 'MapTarget'.");
+
+        if (JsonNodeHelpers.ReadBoolean(node, "execution", "supported") != true)
+            throw new InvalidOperationException($"Debug action '{actionPath}' was not reported as a supported map-target action.");
+
+        var requiredTargetKind = JsonNodeHelpers.ReadString(node, "execution", "requiredTargetKind");
+        if (!string.Equals(requiredTargetKind, "map", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Debug action '{actionPath}' reported required target kind '{requiredTargetKind}' instead of 'map'.");
+    }
+
+    private static void AssertMapTargetDebugActionExecution(
+        ToolInvocationResult result,
+        string actionPath,
+        string expectedKind,
+        int expectedX,
+        int expectedZ,
+        string? expectedThingId)
+    {
+        var returnedPath = JsonNodeHelpers.ReadString(result.StructuredContent, "path");
+        if (!string.Equals(returnedPath, actionPath, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Map-target debug action returned path '{returnedPath}' instead of '{actionPath}'.");
+
+        var mapTarget = JsonNodeHelpers.GetPath(result.StructuredContent, "mapTarget");
+        var returnedKind = JsonNodeHelpers.ReadString(mapTarget, "kind");
+        var returnedX = JsonNodeHelpers.ReadInt32(mapTarget, "cell", "x");
+        var returnedZ = JsonNodeHelpers.ReadInt32(mapTarget, "cell", "z");
+        if (!string.Equals(returnedKind, expectedKind, StringComparison.Ordinal)
+            || returnedX != expectedX
+            || returnedZ != expectedZ)
+        {
+            throw new InvalidOperationException(
+                $"Map-target debug action returned kind '{returnedKind}' at ({returnedX}, {returnedZ}); expected '{expectedKind}' at ({expectedX}, {expectedZ}).");
+        }
+
+        var returnedThingId = JsonNodeHelpers.ReadString(mapTarget, "thingId");
+        var describedThing = JsonNodeHelpers.GetPath(mapTarget, "thing");
+        if (expectedThingId is null)
+        {
+            if (!string.IsNullOrWhiteSpace(returnedThingId) || describedThing is not null)
+                throw new InvalidOperationException("Cell-target debug-action execution unexpectedly returned a thing target.");
+        }
+        else
+        {
+            var describedThingId = JsonNodeHelpers.ReadString(describedThing, "thingId");
+            if (!string.Equals(returnedThingId, expectedThingId, StringComparison.Ordinal)
+                || !string.Equals(describedThingId, expectedThingId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Thing-target debug-action execution returned thing ids '{returnedThingId}' and '{describedThingId}' instead of '{expectedThingId}'.");
+            }
+        }
+
+        var logs = JsonNodeHelpers.ReadArray(result.StructuredContent, "effects", "logs");
+        if (!logs.Any(log => JsonNodeHelpers.ReadString(log, "message").Contains("Lights affecting", StringComparison.Ordinal)))
+            throw new InvalidOperationException($"Map-target debug action '{actionPath}' did not capture a 'Lights affecting' log entry.");
     }
 
     private static string ResolveSafeDebugSettingPath(IReadOnlyList<JsonNode?> children)

@@ -68,10 +68,19 @@ public static class DebugActionExecutionPolicy
                     reason: "No direct action delegate is exposed for this debug node.");
 
             case "ToolMap":
+                if (hasAction)
+                {
+                    return new DebugActionExecutionAssessment(
+                        DebugActionExecutionKind.MapTarget,
+                        supported: true,
+                        reason: "This debug action requires a map target input.",
+                        requiredTargetKind: "map");
+                }
+
                 return new DebugActionExecutionAssessment(
                     DebugActionExecutionKind.MapTarget,
                     supported: false,
-                    reason: "This debug action requires a map target. Targeted map execution is not implemented yet.",
+                    reason: "No map action delegate is exposed for this debug node.",
                     requiredTargetKind: "map");
 
             case "ToolMapForPawns":

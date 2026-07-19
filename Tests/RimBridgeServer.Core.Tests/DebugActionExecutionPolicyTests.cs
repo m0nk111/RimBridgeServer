@@ -64,7 +64,22 @@ public class DebugActionExecutionPolicyTests
     }
 
     [Fact]
-    public void MarksToolMapActionsAsUnsupportedMapTargets()
+    public void MarksToolMapActionsAsSupportedMapTargets()
+    {
+        var assessment = DebugActionExecutionPolicy.Evaluate(
+            hasChildren: false,
+            actionType: "ToolMap",
+            hasAction: true,
+            hasPawnAction: false);
+
+        Assert.Equal(DebugActionExecutionKind.MapTarget, assessment.Kind);
+        Assert.True(assessment.Supported);
+        Assert.Equal("map", assessment.RequiredTargetKind);
+        Assert.Contains("map target", assessment.Reason);
+    }
+
+    [Fact]
+    public void RejectsToolMapLeavesWithoutAnActionDelegate()
     {
         var assessment = DebugActionExecutionPolicy.Evaluate(
             hasChildren: false,
@@ -74,6 +89,7 @@ public class DebugActionExecutionPolicyTests
 
         Assert.Equal(DebugActionExecutionKind.MapTarget, assessment.Kind);
         Assert.False(assessment.Supported);
-        Assert.Contains("map target", assessment.Reason);
+        Assert.Equal("map", assessment.RequiredTargetKind);
+        Assert.Contains("map action delegate", assessment.Reason);
     }
 }

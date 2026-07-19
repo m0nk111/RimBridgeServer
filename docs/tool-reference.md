@@ -289,7 +289,7 @@ Parameters:
 - `limit` (`int`, `optional`, default `50`): Maximum number of matches to return
 - `includeHidden` (`bool`, `optional`, default `false`): Include nodes that are currently hidden in the active game state
 - `supportedOnly` (`bool`, `optional`, default `false`): Only return nodes whose execution metadata reports supported=true
-- `requiredTargetKind` (`string`, `optional`, default `null`): Optional required target kind filter such as pawn
+- `requiredTargetKind` (`string`, `optional`, default `null`): Optional required target kind filter such as pawn or map
 
 ### `rimworld/get_debug_action`
 
@@ -302,12 +302,15 @@ Parameters:
 
 ### `rimworld/execute_debug_action`
 
-Execute a supported RimWorld debug action leaf by stable path, including pawn-target actions when pawnName or pawnId is provided
+Execute a supported RimWorld debug action leaf by stable path, including ToolMap actions targeted by cell or current-map thing
 
 Parameters:
 - `path` (`string`, `required`): Stable debug action path returned by the discovery tools
 - `pawnName` (`string`, `optional`, default `null`): Optional current-map pawn name for ToolMapForPawns debug actions
 - `pawnId` (`string`, `optional`, default `null`): Optional stable current-map pawn id from rimworld/list_colonists for ToolMapForPawns debug actions
+- `x` (`int?`, `optional`, default `null`): Target cell x coordinate for ToolMap actions; provide together with z and without thingId
+- `z` (`int?`, `optional`, default `null`): Target cell z coordinate for ToolMap actions; provide together with x and without thingId
+- `thingId` (`string`, `optional`, default `null`): Stable current-map thing id for ToolMap actions; targets that thing's cell, where vanilla may also affect other things in the same cell
 
 ### `rimworld/set_debug_setting`
 

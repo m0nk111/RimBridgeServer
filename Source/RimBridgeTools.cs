@@ -315,7 +315,7 @@ public class RimBridgeTools
         [ToolParameter(Description = "Maximum number of matches to return")] int limit = 50,
         [ToolParameter(Description = "Include nodes that are currently hidden in the active game state")] bool includeHidden = false,
         [ToolParameter(Description = "Only return nodes whose execution metadata reports supported=true")] bool supportedOnly = false,
-        [ToolParameter(Description = "Optional required target kind filter such as pawn")] string requiredTargetKind = null)
+        [ToolParameter(Description = "Optional required target kind filter such as pawn or map")] string requiredTargetKind = null)
     {
         return InvokeAlias(Arguments((nameof(query), query), (nameof(limit), limit), (nameof(includeHidden), includeHidden), (nameof(supportedOnly), supportedOnly), (nameof(requiredTargetKind), requiredTargetKind)));
     }
@@ -330,14 +330,17 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(path), path), (nameof(includeChildren), includeChildren), (nameof(includeHiddenChildren), includeHiddenChildren)));
     }
 
-    [ReadmeTool("Debug Actions And Mods", "Execute a supported RimWorld debug action leaf by stable path, including pawn-target actions when pawnName or pawnId is provided")]
-    [Tool("rimworld/execute_debug_action", Description = "Execute a supported RimWorld debug action leaf by stable path, including pawn-target actions when pawnName or pawnId is provided")]
+    [ReadmeTool("Debug Actions And Mods", "Execute direct, pawn-target, or map-target RimWorld debug actions by stable path")]
+    [Tool("rimworld/execute_debug_action", Description = "Execute a supported RimWorld debug action leaf by stable path, including ToolMap actions targeted by cell or current-map thing")]
     public object ExecuteDebugAction(
         [ToolParameter(Description = "Stable debug action path returned by the discovery tools")] string path,
         [ToolParameter(Description = "Optional current-map pawn name for ToolMapForPawns debug actions")] string pawnName = null,
-        [ToolParameter(Description = "Optional stable current-map pawn id from rimworld/list_colonists for ToolMapForPawns debug actions")] string pawnId = null)
+        [ToolParameter(Description = "Optional stable current-map pawn id from rimworld/list_colonists for ToolMapForPawns debug actions")] string pawnId = null,
+        [ToolParameter(Description = "Target cell x coordinate for ToolMap actions; provide together with z and without thingId")] int? x = null,
+        [ToolParameter(Description = "Target cell z coordinate for ToolMap actions; provide together with x and without thingId")] int? z = null,
+        [ToolParameter(Description = "Stable current-map thing id for ToolMap actions; targets that thing's cell, where vanilla may also affect other things in the same cell")] string thingId = null)
     {
-        return InvokeAlias(Arguments((nameof(path), path), (nameof(pawnName), pawnName), (nameof(pawnId), pawnId)));
+        return InvokeAlias(Arguments((nameof(path), path), (nameof(pawnName), pawnName), (nameof(pawnId), pawnId), (nameof(x), x), (nameof(z), z), (nameof(thingId), thingId)));
     }
 
     [ReadmeTool("Debug Actions And Mods", "Set a RimWorld debug setting toggle by stable path to a deterministic on/off state")]

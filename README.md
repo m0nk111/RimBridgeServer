@@ -331,7 +331,7 @@ Playback default: RimBridgeServer enables RimWorld's private `TickManager.UltraS
 - `rimworld/list_debug_action_children` - List direct children of a RimWorld debug action path
 - `rimworld/search_debug_actions` - Search the full RimWorld debug-action tree globally by path, label, category, and source metadata so callers do not need to walk one subtree at a time
 - `rimworld/get_debug_action` - Get metadata for one RimWorld debug action path and, optionally, its immediate children
-- `rimworld/execute_debug_action` - Execute a supported RimWorld debug action leaf by stable path, including pawn-target actions when pawnName or pawnId is provided
+- `rimworld/execute_debug_action` - Execute direct, pawn-target, or map-target RimWorld debug actions by stable path
 - `rimworld/set_debug_setting` - Set a RimWorld debug setting toggle by stable path to a deterministic on/off state
 - `rimworld/set_colonist_job_logging` - Deterministically enable or disable job-tracker logging for one current-map colonist and return a log cursor plus recommended `rimbridge/list_logs` arguments for consuming future job lines
 - `rimworld/list_mods` - List installed RimWorld mods, whether each one is enabled in the current configuration, and whether it matches the currently loaded session

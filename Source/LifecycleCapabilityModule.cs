@@ -803,6 +803,7 @@ internal sealed class LifecycleCapabilityModule
         return new
         {
             success = true,
+            thingId = RimWorldState.GetThingId(spawned),
             defName = spawned.def.defName,
             label = spawned.LabelCap,
             stackCount = spawned.stackCount,
