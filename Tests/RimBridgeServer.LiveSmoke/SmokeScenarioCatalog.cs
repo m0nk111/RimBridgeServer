@@ -38,9 +38,11 @@ internal static class SmokeScenarioCatalog
     public const string UiLayoutRoundTripScenarioName = "ui-layout-roundtrip";
     public const string SaveLoadRoundTripScenarioName = "save-load-roundtrip";
     public const string SaveModCompatibilityGuardScenarioName = "save-mod-compatibility-guard";
+    public const string SaveModCompatibilityOverrideScenarioName = "save-mod-compatibility-override";
     public const string ScreenshotCaptureScenarioName = "screenshot-capture";
     private const string SaveLoadRoundTripSaveName = "rimbridge_live_smoke_save_load_roundtrip";
     private const string SaveModCompatibilityFixtureName = "rimbridge_live_smoke_missing_mod_guard";
+    private const string SaveModCompatibilityOverrideFixtureName = "rimbridge_live_smoke_missing_mod_override";
     private const string SaveModCompatibilitySteamFixtureName = "rimbridge_live_smoke_steam_mod_identity";
     private const string SaveModCompatibilityMissingPackageId = "rimbridge.live-smoke.missing-mod";
     private const string SaveModCompatibilityMissingModName = "RimBridge Live Smoke Missing Mod";
@@ -169,6 +171,12 @@ internal static class SmokeScenarioCatalog
                 Name = SaveModCompatibilityGuardScenarioName,
                 Description = "Ensure a playable game exists, verify both load commands reject a copied save with a fake required mod, then prove a local/Steam package-id variant remains compatible.",
                 RunAsync = RunSaveModCompatibilityGuardAsync
+            },
+            [SaveModCompatibilityOverrideScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = SaveModCompatibilityOverrideScenarioName,
+                Description = "Ensure a playable game exists, filter a copied save with a fake required mod from the compatible-save list, then load it through the explicit compatibility override.",
+                RunAsync = RunSaveModCompatibilityOverrideAsync
             },
             [ScreenshotCaptureScenarioName] = new SmokeScenarioDefinition
             {
@@ -2504,6 +2512,124 @@ internal static class SmokeScenarioCatalog
         }
     }
 
+    private static async Task RunSaveModCompatibilityOverrideAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        await context.EnsurePlayableGameAsync(cancellationToken);
+        await context.WaitForLongEventIdleAsync("save_mod_override.wait_for_long_event_idle_before_save", cancellationToken);
+
+        var saveGame = await context.CallGameToolAsync("save_mod_override.save_game", "rimworld/save_game", new
+        {
+            saveName = SaveLoadRoundTripSaveName
+        }, cancellationToken);
+        context.EnsureSucceeded(saveGame, $"Saving RimWorld game to '{SaveLoadRoundTripSaveName}' for the compatibility-override fixture");
+        await context.WaitForLongEventIdleAsync("save_mod_override.wait_for_long_event_idle_after_save", cancellationToken);
+
+        var sourcePath = JsonNodeHelpers.ReadString(saveGame.StructuredContent, "path");
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            throw new InvalidOperationException($"Save '{SaveLoadRoundTripSaveName}' did not produce a source artifact for the compatibility-override fixture.");
+
+        var saveDirectory = Path.GetDirectoryName(sourcePath);
+        if (string.IsNullOrWhiteSpace(saveDirectory))
+            throw new InvalidOperationException($"Could not resolve the save directory from '{sourcePath}'.");
+
+        var fixturePath = Path.Combine(
+            saveDirectory,
+            SaveModCompatibilityOverrideFixtureName + Path.GetExtension(sourcePath));
+        Exception? scenarioError = null;
+
+        try
+        {
+            CreateSaveWithInjectedMetadataMod(
+                sourcePath,
+                fixturePath,
+                SaveModCompatibilityMissingPackageId,
+                SaveModCompatibilityMissingModName);
+
+            var allSaves = await context.CallGameToolAsync("save_mod_override.list_all_saves", "rimworld/list_saves", new
+            {
+                compatibleOnly = false
+            }, cancellationToken);
+            context.EnsureSucceeded(allSaves, "Listing all saves with mod-compatibility details");
+
+            var fixtureEntry = FindSaveEntry(allSaves.StructuredContent, SaveModCompatibilityOverrideFixtureName);
+            if (fixtureEntry is null)
+                throw new InvalidOperationException($"Unfiltered save listing did not include fixture '{SaveModCompatibilityOverrideFixtureName}'.");
+            AssertInjectedMissingModCompatibility(
+                JsonNodeHelpers.GetPath(fixtureEntry, "compatibility"),
+                $"Unfiltered save entry '{SaveModCompatibilityOverrideFixtureName}'");
+
+            var compatibleSaves = await context.CallGameToolAsync("save_mod_override.list_compatible_saves", "rimworld/list_saves", new
+            {
+                compatibleOnly = true
+            }, cancellationToken);
+            context.EnsureSucceeded(compatibleSaves, "Listing saves compatible with the current active mod list");
+
+            if (FindSaveEntry(compatibleSaves.StructuredContent, SaveModCompatibilityOverrideFixtureName) is not null)
+                throw new InvalidOperationException($"Compatible-only save listing unexpectedly included fixture '{SaveModCompatibilityOverrideFixtureName}'.");
+
+            var sourceEntry = FindSaveEntry(compatibleSaves.StructuredContent, SaveLoadRoundTripSaveName);
+            if (sourceEntry is null)
+                throw new InvalidOperationException($"Compatible-only save listing did not retain source save '{SaveLoadRoundTripSaveName}'.");
+            AssertCompatibleSaveEntry(sourceEntry, $"Compatible-only source save '{SaveLoadRoundTripSaveName}'");
+
+            var overrideLoad = await context.CallGameToolAsync("save_mod_override.load_game_ready", "rimworld/load_game_ready", new
+            {
+                saveName = SaveModCompatibilityOverrideFixtureName,
+                timeoutMs = 120000,
+                pollIntervalMs = 50,
+                readiness = "visual",
+                pauseIfNeeded = true,
+                ignoreModCompatibility = true
+            }, cancellationToken);
+            context.EnsureSucceeded(overrideLoad, $"Loading incompatible save '{SaveModCompatibilityOverrideFixtureName}' through the explicit override");
+            if (JsonNodeHelpers.ReadBoolean(overrideLoad.StructuredContent, "success") != true)
+                throw new InvalidOperationException($"Compatibility-override load did not return structured success:true. {overrideLoad.Message}".Trim());
+            if (JsonNodeHelpers.ReadBoolean(overrideLoad.StructuredContent, "compatibilityCheckIgnored") != true)
+                throw new InvalidOperationException("Compatibility-override load did not report compatibilityCheckIgnored=true.");
+            if (JsonNodeHelpers.ReadBoolean(overrideLoad.StructuredContent, "load", "compatibilityCheckIgnored") != true)
+                throw new InvalidOperationException("Compatibility-override load details did not report compatibilityCheckIgnored=true.");
+            AssertInjectedMissingModCompatibility(
+                JsonNodeHelpers.GetPath(overrideLoad.StructuredContent, "compatibility"),
+                "Compatibility-override load response");
+
+            var finalStatus = await context.CallGameToolAsync("save_mod_override.final_bridge_status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+            context.EnsureSucceeded(finalStatus, "Checking bridge status after the incompatible save was loaded through the override");
+            if (JsonNodeHelpers.ReadBoolean(finalStatus.StructuredContent, "state", "automationReady") != true)
+                throw new InvalidOperationException("The game was no longer automation-ready after loading the incompatible save through the explicit override.");
+
+            context.SetSummaryValue("sourceSaveName", SaveLoadRoundTripSaveName);
+            context.SetSummaryValue("fixtureSaveName", SaveModCompatibilityOverrideFixtureName);
+            context.SetSummaryValue("missingPackageId", SaveModCompatibilityMissingPackageId);
+            context.SetScenarioData("saveGame", saveGame.StructuredContent);
+            context.SetScenarioData("allSaves", allSaves.StructuredContent);
+            context.SetScenarioData("compatibleSaves", compatibleSaves.StructuredContent);
+            context.SetScenarioData("overrideLoadGameReady", overrideLoad.StructuredContent);
+            context.SetScenarioData("finalBridgeState", JsonNodeHelpers.GetPath(finalStatus.StructuredContent, "state"));
+        }
+        catch (Exception ex)
+        {
+            scenarioError = ex;
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(fixturePath))
+                {
+                    File.Delete(fixturePath);
+                    context.Note($"Deleted compatibility-override fixture '{fixturePath}'.");
+                }
+            }
+            catch (Exception cleanupError)
+            {
+                context.Note($"Failed to delete compatibility-override fixture '{fixturePath}': {cleanupError.Message}");
+                if (scenarioError is null)
+                    throw;
+            }
+        }
+    }
+
     private static async Task RunScreenshotCaptureAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
     {
         await context.EnsurePlayableGameAsync(cancellationToken);
@@ -3796,6 +3922,13 @@ internal static class SmokeScenarioCatalog
         return saves.Any(save => string.Equals(JsonNodeHelpers.ReadString(save, "name"), saveName, StringComparison.OrdinalIgnoreCase));
     }
 
+    private static JsonNode? FindSaveEntry(JsonNode? structuredContent, string saveName)
+    {
+        var saves = JsonNodeHelpers.ReadArray(structuredContent, "saves");
+        return saves.FirstOrDefault(save =>
+            string.Equals(JsonNodeHelpers.ReadString(save, "name"), saveName, StringComparison.OrdinalIgnoreCase));
+    }
+
     private static void CreateSaveWithInjectedMetadataMod(
         string sourcePath,
         string fixturePath,
@@ -4003,6 +4136,49 @@ internal static class SmokeScenarioCatalog
         var canonicalPackageId = JsonNodeHelpers.ReadString(injectedMod, "canonicalPackageId");
         if (!string.Equals(canonicalPackageId, SaveModCompatibilityMissingPackageId, StringComparison.Ordinal))
             throw new InvalidOperationException($"{toolName} returned canonical package id '{canonicalPackageId}' for '{SaveModCompatibilityMissingPackageId}'.");
+    }
+
+    private static void AssertInjectedMissingModCompatibility(JsonNode? compatibility, string actionDescription)
+    {
+        var status = JsonNodeHelpers.ReadString(compatibility, "status");
+        var compatible = JsonNodeHelpers.ReadBoolean(compatibility, "compatible");
+        var missingModCount = JsonNodeHelpers.ReadInt32(compatibility, "missingModCount");
+        if (!string.Equals(status, "missing_mods", StringComparison.Ordinal)
+            || compatible != false
+            || missingModCount.GetValueOrDefault() <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{actionDescription} returned compatibility status '{status}', compatible={compatible}, and missingModCount={missingModCount}; expected missing_mods with at least one missing mod.");
+        }
+
+        var missingMods = JsonNodeHelpers.ReadArray(compatibility, "missingMods");
+        var injectedMod = missingMods.SingleOrDefault(mod =>
+            string.Equals(JsonNodeHelpers.ReadString(mod, "packageId"), SaveModCompatibilityMissingPackageId, StringComparison.Ordinal)
+            && string.Equals(JsonNodeHelpers.ReadString(mod, "name"), SaveModCompatibilityMissingModName, StringComparison.Ordinal));
+        if (injectedMod is null)
+            throw new InvalidOperationException($"{actionDescription} did not include the injected package id and name in compatibility.missingMods.");
+
+        var canonicalPackageId = JsonNodeHelpers.ReadString(injectedMod, "canonicalPackageId");
+        if (!string.Equals(canonicalPackageId, SaveModCompatibilityMissingPackageId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"{actionDescription} returned canonical package id '{canonicalPackageId}' for '{SaveModCompatibilityMissingPackageId}'.");
+        }
+    }
+
+    private static void AssertCompatibleSaveEntry(JsonNode? saveEntry, string actionDescription)
+    {
+        var compatibility = JsonNodeHelpers.GetPath(saveEntry, "compatibility");
+        var status = JsonNodeHelpers.ReadString(compatibility, "status");
+        var compatible = JsonNodeHelpers.ReadBoolean(compatibility, "compatible");
+        var missingModCount = JsonNodeHelpers.ReadInt32(compatibility, "missingModCount");
+        if (!string.Equals(status, "compatible", StringComparison.Ordinal)
+            || compatible != true
+            || missingModCount != 0)
+        {
+            throw new InvalidOperationException(
+                $"{actionDescription} returned compatibility status '{status}', compatible={compatible}, and missingModCount={missingModCount}; expected an explicitly compatible save.");
+        }
     }
 
     private static void AssertCompatibleSaveLoad(ToolInvocationResult result, string actionDescription)

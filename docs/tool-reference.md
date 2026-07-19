@@ -961,9 +961,10 @@ Parameters:
 
 ### `rimworld/list_saves`
 
-List saved RimWorld games
+List saved RimWorld games with mod-compatibility details and optionally return only saves whose recorded mods are all currently active
 
-Parameters: none.
+Parameters:
+- `compatibleOnly` (`bool`, `optional`, default `false`): Return only saves whose recorded mods are all currently active; extra currently active mods are allowed
 
 ### `rimworld/spawn_thing`
 
@@ -984,14 +985,15 @@ Parameters:
 
 ### `rimworld/load_game`
 
-Load a named RimWorld save after verifying every mod recorded by it is currently active
+Load a named RimWorld save after verifying every recorded mod is active unless ignoreModCompatibility is true
 
 Parameters:
 - `saveName` (`string`, `required`): Save name without extension
+- `ignoreModCompatibility` (`bool`, `optional`, default `false`): Load even when recorded mods are missing or compatibility metadata cannot be read
 
 ### `rimworld/load_game_ready`
 
-Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level before returning
+Load a named RimWorld save after verifying every recorded mod is active unless ignoreModCompatibility is true, then wait until the requested readiness level
 
 Parameters:
 - `saveName` (`string`, `required`): Save name without extension
@@ -1001,6 +1003,7 @@ Parameters:
 - `pauseIfNeeded` (`bool`, `optional`, default `false`): Pause the game before returning success if it is still running
 - `targetReadiness` (`string`, `optional`, default `null`): Alias for readiness; useful when callers naturally name the requested readiness target explicitly
 - `waitForVisualReady` (`bool`, `optional`, default `false`): Convenience alias that forces readiness to visual when true
+- `ignoreModCompatibility` (`bool`, `optional`, default `false`): Load even when recorded mods are missing or compatibility metadata cannot be read
 
 ### `rimworld/open_context_menu`
 

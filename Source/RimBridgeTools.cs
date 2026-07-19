@@ -1071,11 +1071,12 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(fileName), fileName), (nameof(includeTargets), includeTargets), (nameof(suppressMessage), suppressMessage), (nameof(clipTargetId), clipTargetId), (nameof(clipPadding), clipPadding)));
     }
 
-    [ReadmeTool("Save/Load And Spawning", "List saved RimWorld games")]
-    [Tool("rimworld/list_saves", Description = "List saved RimWorld games")]
-    public object ListSaves()
+    [ReadmeTool("Save/Load And Spawning", "List saved RimWorld games and optionally return only saves whose recorded mods are all currently active")]
+    [Tool("rimworld/list_saves", Description = "List saved RimWorld games with mod-compatibility details and optionally return only saves whose recorded mods are all currently active")]
+    public object ListSaves(
+        [ToolParameter(Description = "Return only saves whose recorded mods are all currently active; extra currently active mods are allowed")] bool compatibleOnly = false)
     {
-        return InvokeAlias();
+        return InvokeAlias(Arguments((nameof(compatibleOnly), compatibleOnly)));
     }
 
     [ReadmeTool("Save/Load And Spawning", "Spawn a thing on the current map at a target cell")]
@@ -1096,15 +1097,17 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(saveName), saveName)));
     }
 
-    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save after verifying every mod recorded by it is currently active")]
-    [Tool("rimworld/load_game", Description = "Load a named RimWorld save after verifying every mod recorded by it is currently active")]
-    public object LoadGame([ToolParameter(Description = "Save name without extension")] string saveName)
+    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save after verifying every recorded mod is active, with an explicit compatibility-check override")]
+    [Tool("rimworld/load_game", Description = "Load a named RimWorld save after verifying every recorded mod is active unless ignoreModCompatibility is true")]
+    public object LoadGame(
+        [ToolParameter(Description = "Save name without extension")] string saveName,
+        [ToolParameter(Description = "Load even when recorded mods are missing or compatibility metadata cannot be read")] bool ignoreModCompatibility = false)
     {
-        return InvokeAlias(Arguments((nameof(saveName), saveName)));
+        return InvokeAlias(Arguments((nameof(saveName), saveName), (nameof(ignoreModCompatibility), ignoreModCompatibility)));
     }
 
-    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level")]
-    [Tool("rimworld/load_game_ready", Description = "Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level before returning")]
+    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save with an explicit compatibility-check override, then wait until the requested readiness level")]
+    [Tool("rimworld/load_game_ready", Description = "Load a named RimWorld save after verifying every recorded mod is active unless ignoreModCompatibility is true, then wait until the requested readiness level")]
     public object LoadGameReady(
         [ToolParameter(Description = "Save name without extension")] string saveName,
         [ToolParameter(Description = "Maximum time to wait in milliseconds")] int timeoutMs = 120000,
@@ -1112,9 +1115,10 @@ public class RimBridgeTools
         [ToolParameter(Description = "Readiness target: gameData, mapData, currentMap, playable, or visual")] string readiness = AutomationReadiness.DefaultTargetName,
         [ToolParameter(Description = "Pause the game before returning success if it is still running")] bool pauseIfNeeded = false,
         [ToolParameter(Description = "Alias for readiness; useful when callers naturally name the requested readiness target explicitly")] string targetReadiness = null,
-        [ToolParameter(Description = "Convenience alias that forces readiness to visual when true")] bool waitForVisualReady = false)
+        [ToolParameter(Description = "Convenience alias that forces readiness to visual when true")] bool waitForVisualReady = false,
+        [ToolParameter(Description = "Load even when recorded mods are missing or compatibility metadata cannot be read")] bool ignoreModCompatibility = false)
     {
-        return InvokeAlias(Arguments((nameof(saveName), saveName), (nameof(timeoutMs), timeoutMs), (nameof(pollIntervalMs), pollIntervalMs), (nameof(readiness), readiness), (nameof(pauseIfNeeded), pauseIfNeeded), (nameof(targetReadiness), targetReadiness), (nameof(waitForVisualReady), waitForVisualReady)));
+        return InvokeAlias(Arguments((nameof(saveName), saveName), (nameof(timeoutMs), timeoutMs), (nameof(pollIntervalMs), pollIntervalMs), (nameof(readiness), readiness), (nameof(pauseIfNeeded), pauseIfNeeded), (nameof(targetReadiness), targetReadiness), (nameof(waitForVisualReady), waitForVisualReady), (nameof(ignoreModCompatibility), ignoreModCompatibility)));
     }
 
     [ReadmeTool("Context Menus And Map Interaction", "Dispatch a live map click at a target pawn or cell and capture the resulting context menu when one remains open")]

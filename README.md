@@ -427,11 +427,11 @@ Playback default: RimBridgeServer enables RimWorld's private `TickManager.UltraS
 
 ### Save/Load And Spawning
 
-- `rimworld/list_saves` - List saved RimWorld games
+- `rimworld/list_saves` - List saved RimWorld games and optionally return only saves whose recorded mods are all currently active
 - `rimworld/spawn_thing` - Spawn a thing on the current map at a target cell
 - `rimworld/save_game` - Save the current game to a named save
-- `rimworld/load_game` - Load a named RimWorld save after verifying every mod recorded by it is currently active
-- `rimworld/load_game_ready` - Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level
+- `rimworld/load_game` - Load a named RimWorld save after verifying every recorded mod is active, with an explicit compatibility-check override
+- `rimworld/load_game_ready` - Load a named RimWorld save with an explicit compatibility-check override, then wait until the requested readiness level
 
 ### Context Menus And Map Interaction
 

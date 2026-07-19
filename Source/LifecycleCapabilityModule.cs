@@ -738,23 +738,42 @@ internal sealed class LifecycleCapabilityModule
         };
     }
 
-    public object ListSaves()
+    public object ListSaves(bool compatibleOnly = false)
     {
-        var saves = GenFilePaths.AllSavedGameFiles
+        var runtime = Dispatcher.Invoke(CaptureSaveCompatibilityRuntimeSnapshot, timeoutMs: 5000);
+        var inspectedSaves = GenFilePaths.AllSavedGameFiles
             .Select(file => new
             {
-                name = Path.GetFileNameWithoutExtension(file.Name),
-                path = file.FullName,
-                lastWriteTimeUtc = file.LastWriteTimeUtc,
-                sizeBytes = file.Length
+                File = file,
+                Compatibility = InspectSaveCompatibility(file.FullName, runtime)
             })
             .ToList();
+        var saves = inspectedSaves
+            .Where(save => compatibleOnly == false || save.Compatibility.Compatibility.IsCompatible)
+            .Select(save => new
+            {
+                name = Path.GetFileNameWithoutExtension(save.File.Name),
+                path = save.File.FullName,
+                lastWriteTimeUtc = save.File.LastWriteTimeUtc,
+                sizeBytes = save.File.Length,
+                compatibility = DescribeSaveCompatibility(save.Compatibility)
+            })
+            .ToList();
+        var compatibleCount = inspectedSaves.Count(save => save.Compatibility.Compatibility.IsCompatible);
+        var missingModsCount = inspectedSaves.Count(save => save.Compatibility.Compatibility.Status == SaveModCompatibilityStatus.MissingMods);
+        var metadataUnavailableCount = inspectedSaves.Count(save => save.Compatibility.Compatibility.Status == SaveModCompatibilityStatus.MetadataUnavailable);
 
         return new
         {
             success = true,
             saveFolder = GenFilePaths.SavedGamesFolderPath,
+            compatibleOnly,
+            totalCount = inspectedSaves.Count,
             count = saves.Count,
+            compatibleCount,
+            incompatibleCount = inspectedSaves.Count - compatibleCount,
+            missingModsCount,
+            metadataUnavailableCount,
             saves
         };
     }
@@ -813,7 +832,7 @@ internal sealed class LifecycleCapabilityModule
         };
     }
 
-    public object LoadGame(string saveName)
+    public object LoadGame(string saveName, bool ignoreModCompatibility = false)
     {
         var safeName = RimWorldState.SanitizeName(saveName, "rimbridge_save");
         var path = GenFilePaths.FilePathForSavedGame(safeName);
@@ -823,7 +842,9 @@ internal sealed class LifecycleCapabilityModule
         }
 
         var compatibility = InspectSaveCompatibility(path, captureRuntimeOnCurrentThread: true);
-        var compatibilityFailure = CreateSaveCompatibilityFailure(safeName, path, compatibility);
+        var compatibilityFailure = ignoreModCompatibility
+            ? null
+            : CreateSaveCompatibilityFailure(safeName, path, compatibility);
         if (compatibilityFailure != null)
             return compatibilityFailure;
 
@@ -839,12 +860,13 @@ internal sealed class LifecycleCapabilityModule
             status = "queued",
             saveName = safeName,
             path,
+            compatibilityCheckIgnored = ignoreModCompatibility,
             compatibility = DescribeSaveCompatibility(compatibility),
             state = RimWorldState.ToolStateSnapshot()
         };
     }
 
-    public object LoadGameReady(string saveName, int timeoutMs = 120000, int pollIntervalMs = 50, string readiness = AutomationReadiness.DefaultTargetName, bool pauseIfNeeded = false, string targetReadiness = null, bool waitForVisualReady = false)
+    public object LoadGameReady(string saveName, int timeoutMs = 120000, int pollIntervalMs = 50, string readiness = AutomationReadiness.DefaultTargetName, bool pauseIfNeeded = false, string targetReadiness = null, bool waitForVisualReady = false, bool ignoreModCompatibility = false)
     {
         readiness = RimWorldWaits.ResolveReadinessInput(readiness, targetReadiness, waitForVisualReady);
         var operationStopwatch = Stopwatch.StartNew();
@@ -862,7 +884,9 @@ internal sealed class LifecycleCapabilityModule
         }
 
         var compatibility = InspectSaveCompatibility(path, captureRuntimeOnCurrentThread: false);
-        var compatibilityFailure = CreateSaveCompatibilityFailure(safeName, path, compatibility);
+        var compatibilityFailure = ignoreModCompatibility
+            ? null
+            : CreateSaveCompatibilityFailure(safeName, path, compatibility);
         if (compatibilityFailure != null)
             return compatibilityFailure;
 
@@ -895,6 +919,7 @@ internal sealed class LifecycleCapabilityModule
             ["saveName"] = safeName,
             ["path"] = path,
             ["message"] = message,
+            ["compatibilityCheckIgnored"] = ignoreModCompatibility,
             ["compatibility"] = DescribeSaveCompatibility(compatibility),
             ["state"] = finalState ?? queuedState,
             ["load"] = new Dictionary<string, object>(StringComparer.Ordinal)
@@ -903,6 +928,7 @@ internal sealed class LifecycleCapabilityModule
                 ["status"] = "queued",
                 ["saveName"] = safeName,
                 ["path"] = path,
+                ["compatibilityCheckIgnored"] = ignoreModCompatibility,
                 ["compatibility"] = DescribeSaveCompatibility(compatibility),
                 ["state"] = queuedState
             },
@@ -915,6 +941,11 @@ internal sealed class LifecycleCapabilityModule
         var runtime = captureRuntimeOnCurrentThread
             ? CaptureSaveCompatibilityRuntimeSnapshot()
             : Dispatcher.Invoke(CaptureSaveCompatibilityRuntimeSnapshot, timeoutMs: 5000);
+        return InspectSaveCompatibility(path, runtime);
+    }
+
+    private static SaveCompatibilityInspection InspectSaveCompatibility(string path, SaveCompatibilityRuntimeSnapshot runtime)
+    {
         var metadata = SaveModCompatibility.ReadMetadata(path);
         return new SaveCompatibilityInspection
         {
@@ -959,6 +990,7 @@ internal sealed class LifecycleCapabilityModule
             ["message"] = message,
             ["saveName"] = saveName,
             ["path"] = path,
+            ["compatibilityCheckIgnored"] = false,
             ["compatibility"] = DescribeSaveCompatibility(inspection),
             ["state"] = inspection.State
         };
