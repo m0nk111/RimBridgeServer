@@ -31,6 +31,7 @@ internal static class SmokeScenarioCatalog
     public const string SelectionRoundTripScenarioName = "selection-roundtrip";
     public const string SemanticDiagnosticsRoundTripScenarioName = "semantic-diagnostics-roundtrip";
     public const string ModConfigurationRoundTripScenarioName = "mod-configuration-roundtrip";
+    public const string TimeSpeedBoostRoundTripScenarioName = "time-speed-boost-roundtrip";
     public const string MainTabNavigationScenarioName = "main-tab-navigation";
     public const string UiLayoutRoundTripScenarioName = "ui-layout-roundtrip";
     public const string SaveLoadRoundTripScenarioName = "save-load-roundtrip";
@@ -129,6 +130,12 @@ internal static class SmokeScenarioCatalog
                 Name = ModConfigurationRoundTripScenarioName,
                 Description = "Inspect installed mod inventory, disable and re-enable one active non-core mod, restore its original load-order slot, and verify restart-needed semantics against the loaded session.",
                 RunAsync = RunModConfigurationRoundTripAsync
+            },
+            [TimeSpeedBoostRoundTripScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = TimeSpeedBoostRoundTripScenarioName,
+                Description = "Flip RimWorld's private ultrafast speed boost in both directions, verify each response reports the post-update value, and restore the original boost state.",
+                RunAsync = RunTimeSpeedBoostRoundTripAsync
             },
             [MainTabNavigationScenarioName] = new SmokeScenarioDefinition
             {
@@ -509,6 +516,113 @@ internal static class SmokeScenarioCatalog
             "mod_configuration.collect_logs",
             cancellationToken);
         context.ApplyObservationWindow(observation);
+    }
+
+    private static async Task RunTimeSpeedBoostRoundTripAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        await context.EnsurePlayableGameAsync(cancellationToken);
+        await context.WaitForLongEventIdleAsync("time_speed_boost.wait_for_long_event_idle", cancellationToken);
+
+        var observationWindow = await context.BeginObservationWindowAsync("time_speed_boost.snapshot_bridge_status", cancellationToken);
+        var baselineStatus = await context.CallGameToolAsync("time_speed_boost.read_baseline_status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+        context.EnsureSucceeded(baselineStatus, "Reading the baseline playback state");
+
+        var baselineSpeed = JsonNodeHelpers.ReadString(baselineStatus.StructuredContent, "state", "timeSpeed");
+        if (string.IsNullOrWhiteSpace(baselineSpeed))
+            throw new InvalidOperationException("The baseline bridge status did not report the current RimWorld time speed.");
+
+        var baselineProbe = await context.CallGameToolAsync("time_speed_boost.read_baseline_boost", "rimworld/set_time_speed", new
+        {
+            speed = baselineSpeed,
+            ultraSpeedBoost = (bool?)null
+        }, cancellationToken);
+        context.EnsureSucceeded(baselineProbe, "Reading the baseline ultrafast speed boost");
+
+        if (JsonNodeHelpers.ReadBoolean(baselineProbe.StructuredContent, "ultraSpeedBoostAvailable") != true)
+            throw new InvalidOperationException("RimWorld's private ultrafast speed boost field was not available.");
+
+        var baselineBoost = JsonNodeHelpers.ReadBoolean(baselineProbe.StructuredContent, "currentUltraSpeedBoost");
+        if (!baselineBoost.HasValue)
+            throw new InvalidOperationException("The baseline time-speed response did not report currentUltraSpeedBoost.");
+
+        var oppositeBoost = !baselineBoost.Value;
+        context.SetScenarioData("baselineStatus", baselineStatus.StructuredContent);
+        context.SetScenarioData("baselineBoost", baselineProbe.StructuredContent);
+
+        try
+        {
+            var setOpposite = await context.CallGameToolAsync("time_speed_boost.set_opposite", "rimworld/set_time_speed", new
+            {
+                speed = baselineSpeed,
+                ultraSpeedBoost = oppositeBoost
+            }, cancellationToken);
+            context.EnsureSucceeded(setOpposite, $"Setting the ultrafast speed boost to {oppositeBoost}");
+            AssertUltraSpeedBoostTransition(setOpposite.StructuredContent, baselineBoost.Value, oppositeBoost, "Setting the opposite boost value");
+
+            var restoreBaseline = await context.CallGameToolAsync("time_speed_boost.restore_baseline", "rimworld/set_time_speed", new
+            {
+                speed = baselineSpeed,
+                ultraSpeedBoost = baselineBoost.Value
+            }, cancellationToken);
+            context.EnsureSucceeded(restoreBaseline, $"Restoring the ultrafast speed boost to {baselineBoost.Value}");
+            AssertUltraSpeedBoostTransition(restoreBaseline.StructuredContent, oppositeBoost, baselineBoost.Value, "Restoring the baseline boost value");
+
+            context.SetSummaryValue("timeSpeed", baselineSpeed);
+            context.SetSummaryValue("baselineUltraSpeedBoost", baselineBoost.Value.ToString());
+            context.SetSummaryValue("oppositeUltraSpeedBoost", oppositeBoost.ToString());
+            context.SetScenarioData("setOppositeBoost", setOpposite.StructuredContent);
+            context.SetScenarioData("restoreBaselineBoost", restoreBaseline.StructuredContent);
+        }
+        finally
+        {
+            try
+            {
+                var cleanupRestore = await context.CallGameToolAsync("time_speed_boost.cleanup_restore_baseline", "rimworld/set_time_speed", new
+                {
+                    speed = baselineSpeed,
+                    ultraSpeedBoost = baselineBoost.Value
+                }, cancellationToken);
+                context.SetScenarioData("cleanupRestoreBaselineBoost", cleanupRestore.StructuredContent);
+
+                if (!cleanupRestore.Success)
+                {
+                    context.Note($"Cleanup warning: restoring the baseline ultrafast speed boost to {baselineBoost.Value} did not succeed.");
+                }
+                else if (JsonNodeHelpers.ReadBoolean(cleanupRestore.StructuredContent, "currentUltraSpeedBoost") != baselineBoost.Value)
+                {
+                    context.Note($"Cleanup warning: the final response did not confirm currentUltraSpeedBoost={baselineBoost.Value}.");
+                }
+            }
+            catch (Exception ex)
+            {
+                context.Note($"Cleanup warning: restoring the baseline ultrafast speed boost failed: {ex.Message}");
+            }
+        }
+
+        var observation = await observationWindow.CaptureAsync(
+            "time_speed_boost.final_bridge_status",
+            "time_speed_boost.collect_operation_events",
+            "time_speed_boost.collect_logs",
+            cancellationToken);
+        context.ApplyObservationWindow(observation);
+    }
+
+    private static void AssertUltraSpeedBoostTransition(JsonNode? response, bool expectedPrevious, bool expectedCurrent, string action)
+    {
+        if (JsonNodeHelpers.ReadBoolean(response, "ultraSpeedBoostAvailable") != true)
+            throw new InvalidOperationException($"{action} reported that the ultrafast speed boost field was unavailable.");
+
+        var requested = JsonNodeHelpers.ReadBoolean(response, "requestedUltraSpeedBoost");
+        if (requested != expectedCurrent)
+            throw new InvalidOperationException($"{action} reported requestedUltraSpeedBoost={requested?.ToString() ?? "null"} instead of {expectedCurrent}.");
+
+        var previous = JsonNodeHelpers.ReadBoolean(response, "previousUltraSpeedBoost");
+        if (previous != expectedPrevious)
+            throw new InvalidOperationException($"{action} reported previousUltraSpeedBoost={previous?.ToString() ?? "null"} instead of {expectedPrevious}.");
+
+        var current = JsonNodeHelpers.ReadBoolean(response, "currentUltraSpeedBoost");
+        if (current != expectedCurrent)
+            throw new InvalidOperationException($"{action} reported currentUltraSpeedBoost={current?.ToString() ?? "null"} instead of the post-update value {expectedCurrent}.");
     }
 
     private static async Task RunMainTabNavigationAsync(SmokeScenarioContext context, CancellationToken cancellationToken)

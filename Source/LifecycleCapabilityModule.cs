@@ -82,7 +82,10 @@ internal sealed class LifecycleCapabilityModule
         var previousUltraSpeedBoost = TryReadUltraSpeedBoost();
         bool? currentUltraSpeedBoost = null;
         if (ultraSpeedBoost != null)
-            currentUltraSpeedBoost = TrySetUltraSpeedBoost(ultraSpeedBoost.Value);
+        {
+            TrySetUltraSpeedBoost(ultraSpeedBoost.Value);
+            currentUltraSpeedBoost = TryReadUltraSpeedBoost();
+        }
 
         Find.TickManager.CurTimeSpeed = parsed;
         return new
