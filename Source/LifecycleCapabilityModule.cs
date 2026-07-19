@@ -36,6 +36,24 @@ internal sealed class LifecycleCapabilityModule
         public List<object> MatchingLetters { get; set; } = [];
     }
 
+    private sealed class SaveCompatibilityInspection
+    {
+        public SaveModMetadataReadResult Metadata { get; set; }
+
+        public SaveModCompatibilityResult Compatibility { get; set; }
+
+        public int ActiveModCount { get; set; }
+
+        public object State { get; set; }
+    }
+
+    private sealed class SaveCompatibilityRuntimeSnapshot
+    {
+        public List<string> ActivePackageIds { get; set; } = [];
+
+        public object State { get; set; }
+    }
+
     public object PauseGame(bool pause = true)
     {
         if (Current.Game == null)
@@ -804,6 +822,11 @@ internal sealed class LifecycleCapabilityModule
             return new { success = false, message = $"Save '{safeName}' does not exist.", path };
         }
 
+        var compatibility = InspectSaveCompatibility(path, captureRuntimeOnCurrentThread: true);
+        var compatibilityFailure = CreateSaveCompatibilityFailure(safeName, path, compatibility);
+        if (compatibilityFailure != null)
+            return compatibilityFailure;
+
         if (Find.WindowStack?.FloatMenu != null)
             Find.WindowStack.TryRemove(Find.WindowStack.FloatMenu, doCloseSound: false);
         RimBridgeContextMenus.Clear();
@@ -816,6 +839,7 @@ internal sealed class LifecycleCapabilityModule
             status = "queued",
             saveName = safeName,
             path,
+            compatibility = DescribeSaveCompatibility(compatibility),
             state = RimWorldState.ToolStateSnapshot()
         };
     }
@@ -836,6 +860,11 @@ internal sealed class LifecycleCapabilityModule
         {
             return CreateLoadGameReadyQueueFailure(safeName, path, mainThreadReady);
         }
+
+        var compatibility = InspectSaveCompatibility(path, captureRuntimeOnCurrentThread: false);
+        var compatibilityFailure = CreateSaveCompatibilityFailure(safeName, path, compatibility);
+        if (compatibilityFailure != null)
+            return compatibilityFailure;
 
         object queuedState;
         try
@@ -866,6 +895,7 @@ internal sealed class LifecycleCapabilityModule
             ["saveName"] = safeName,
             ["path"] = path,
             ["message"] = message,
+            ["compatibility"] = DescribeSaveCompatibility(compatibility),
             ["state"] = finalState ?? queuedState,
             ["load"] = new Dictionary<string, object>(StringComparer.Ordinal)
             {
@@ -873,9 +903,114 @@ internal sealed class LifecycleCapabilityModule
                 ["status"] = "queued",
                 ["saveName"] = safeName,
                 ["path"] = path,
+                ["compatibility"] = DescribeSaveCompatibility(compatibility),
                 ["state"] = queuedState
             },
             ["wait"] = wait
+        };
+    }
+
+    private static SaveCompatibilityInspection InspectSaveCompatibility(string path, bool captureRuntimeOnCurrentThread)
+    {
+        var runtime = captureRuntimeOnCurrentThread
+            ? CaptureSaveCompatibilityRuntimeSnapshot()
+            : Dispatcher.Invoke(CaptureSaveCompatibilityRuntimeSnapshot, timeoutMs: 5000);
+        var metadata = SaveModCompatibility.ReadMetadata(path);
+        return new SaveCompatibilityInspection
+        {
+            Metadata = metadata,
+            Compatibility = SaveModCompatibility.Evaluate(metadata, runtime.ActivePackageIds),
+            ActiveModCount = runtime.ActivePackageIds.Count,
+            State = runtime.State
+        };
+    }
+
+    private static SaveCompatibilityRuntimeSnapshot CaptureSaveCompatibilityRuntimeSnapshot()
+    {
+        return new SaveCompatibilityRuntimeSnapshot
+        {
+            ActivePackageIds = LoadedModManager.RunningMods
+                .Where(mod => mod != null)
+                .Select(mod => mod.PackageId)
+                .Where(packageId => string.IsNullOrWhiteSpace(packageId) == false)
+                .ToList(),
+            State = RimWorldState.ToolStateSnapshot()
+        };
+    }
+
+    private static Dictionary<string, object> CreateSaveCompatibilityFailure(
+        string saveName,
+        string path,
+        SaveCompatibilityInspection inspection)
+    {
+        if (inspection.Compatibility.IsCompatible)
+            return null;
+
+        var missingMods = inspection.Compatibility.MissingMods;
+        var hasMissingMods = inspection.Compatibility.Status == SaveModCompatibilityStatus.MissingMods;
+        var message = hasMissingMods
+            ? $"Save '{saveName}' cannot be loaded because {missingMods.Count} mod(s) recorded by the save are not currently active: {string.Join(", ", missingMods.Select(DescribeMissingModInline))}."
+            : $"Save '{saveName}' cannot be loaded because its mod compatibility metadata could not be read: {inspection.Compatibility.MetadataError}";
+
+        return new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["success"] = false,
+            ["code"] = hasMissingMods ? "save.missing_mods" : "save.mod_metadata_unavailable",
+            ["message"] = message,
+            ["saveName"] = saveName,
+            ["path"] = path,
+            ["compatibility"] = DescribeSaveCompatibility(inspection),
+            ["state"] = inspection.State
+        };
+    }
+
+    private static string DescribeMissingModInline(SaveModReference mod)
+    {
+        return string.Equals(mod.Name, mod.PackageId, StringComparison.OrdinalIgnoreCase)
+            ? mod.PackageId
+            : $"{mod.Name} ({mod.PackageId})";
+    }
+
+    private static Dictionary<string, object> DescribeSaveCompatibility(SaveCompatibilityInspection inspection)
+    {
+        return new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["status"] = DescribeSaveCompatibilityStatus(inspection.Compatibility.Status),
+            ["compatible"] = inspection.Compatibility.IsCompatible,
+            ["metadataStatus"] = DescribeSaveMetadataStatus(inspection.Compatibility.MetadataStatus),
+            ["metadataReadable"] = inspection.Compatibility.MetadataReadable,
+            ["metadataError"] = string.IsNullOrWhiteSpace(inspection.Compatibility.MetadataError)
+                ? null
+                : inspection.Compatibility.MetadataError,
+            ["recordedModCount"] = inspection.Metadata.Mods.Count,
+            ["activeModCount"] = inspection.ActiveModCount,
+            ["missingModCount"] = inspection.Compatibility.MissingMods.Count,
+            ["missingMods"] = inspection.Compatibility.MissingMods.Select(mod => new
+            {
+                name = mod.Name,
+                packageId = mod.PackageId,
+                canonicalPackageId = mod.CanonicalPackageId
+            }).ToList()
+        };
+    }
+
+    private static string DescribeSaveCompatibilityStatus(SaveModCompatibilityStatus status)
+    {
+        return status switch
+        {
+            SaveModCompatibilityStatus.Compatible => "compatible",
+            SaveModCompatibilityStatus.MissingMods => "missing_mods",
+            _ => "metadata_unavailable"
+        };
+    }
+
+    private static string DescribeSaveMetadataStatus(SaveModMetadataStatus status)
+    {
+        return status switch
+        {
+            SaveModMetadataStatus.Readable => "readable",
+            SaveModMetadataStatus.MissingModMetadata => "missing_mod_metadata",
+            _ => "unreadable"
         };
     }
 

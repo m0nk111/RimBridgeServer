@@ -1096,15 +1096,15 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(saveName), saveName)));
     }
 
-    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save")]
-    [Tool("rimworld/load_game", Description = "Load a named RimWorld save")]
+    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save after verifying every mod recorded by it is currently active")]
+    [Tool("rimworld/load_game", Description = "Load a named RimWorld save after verifying every mod recorded by it is currently active")]
     public object LoadGame([ToolParameter(Description = "Save name without extension")] string saveName)
     {
         return InvokeAlias(Arguments((nameof(saveName), saveName)));
     }
 
-    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save and wait until the requested readiness level before returning")]
-    [Tool("rimworld/load_game_ready", Description = "Load a named RimWorld save and wait until the requested readiness level before returning")]
+    [ReadmeTool("Save/Load And Spawning", "Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level")]
+    [Tool("rimworld/load_game_ready", Description = "Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level before returning")]
     public object LoadGameReady(
         [ToolParameter(Description = "Save name without extension")] string saveName,
         [ToolParameter(Description = "Maximum time to wait in milliseconds")] int timeoutMs = 120000,

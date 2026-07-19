@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using System.Text;
 using System.Text.Json.Nodes;
+using System.Xml.Linq;
 
 namespace RimBridgeServer.LiveSmoke;
 
@@ -35,8 +37,15 @@ internal static class SmokeScenarioCatalog
     public const string MainTabNavigationScenarioName = "main-tab-navigation";
     public const string UiLayoutRoundTripScenarioName = "ui-layout-roundtrip";
     public const string SaveLoadRoundTripScenarioName = "save-load-roundtrip";
+    public const string SaveModCompatibilityGuardScenarioName = "save-mod-compatibility-guard";
     public const string ScreenshotCaptureScenarioName = "screenshot-capture";
     private const string SaveLoadRoundTripSaveName = "rimbridge_live_smoke_save_load_roundtrip";
+    private const string SaveModCompatibilityFixtureName = "rimbridge_live_smoke_missing_mod_guard";
+    private const string SaveModCompatibilitySteamFixtureName = "rimbridge_live_smoke_steam_mod_identity";
+    private const string SaveModCompatibilityMissingPackageId = "rimbridge.live-smoke.missing-mod";
+    private const string SaveModCompatibilityMissingModName = "RimBridge Live Smoke Missing Mod";
+    private const string RimBridgePackageId = "brrainz.rimbridgeserver";
+    private const string RimBridgeSteamPackageId = "brrainz.rimbridgeserver_steam";
 
     private static readonly IReadOnlyDictionary<string, SmokeScenarioDefinition> Definitions =
         new Dictionary<string, SmokeScenarioDefinition>(StringComparer.Ordinal)
@@ -154,6 +163,12 @@ internal static class SmokeScenarioCatalog
                 Name = SaveLoadRoundTripScenarioName,
                 Description = "Ensure a playable game exists, save it to a stable test slot, load it again, and verify the colony comes back.",
                 RunAsync = RunSaveLoadRoundTripAsync
+            },
+            [SaveModCompatibilityGuardScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = SaveModCompatibilityGuardScenarioName,
+                Description = "Ensure a playable game exists, verify both load commands reject a copied save with a fake required mod, then prove a local/Steam package-id variant remains compatible.",
+                RunAsync = RunSaveModCompatibilityGuardAsync
             },
             [ScreenshotCaptureScenarioName] = new SmokeScenarioDefinition
             {
@@ -2381,6 +2396,114 @@ internal static class SmokeScenarioCatalog
         context.ApplyObservationWindow(observation);
     }
 
+    private static async Task RunSaveModCompatibilityGuardAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        await context.EnsurePlayableGameAsync(cancellationToken);
+        await context.WaitForLongEventIdleAsync("save_mod_guard.wait_for_long_event_idle_before_save", cancellationToken);
+
+        var saveGame = await context.CallGameToolAsync("save_mod_guard.save_game", "rimworld/save_game", new
+        {
+            saveName = SaveLoadRoundTripSaveName
+        }, cancellationToken);
+        context.EnsureSucceeded(saveGame, $"Saving RimWorld game to '{SaveLoadRoundTripSaveName}' for the compatibility-guard fixture");
+        await context.WaitForLongEventIdleAsync("save_mod_guard.wait_for_long_event_idle_after_save", cancellationToken);
+
+        var sourcePath = JsonNodeHelpers.ReadString(saveGame.StructuredContent, "path");
+        if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            throw new InvalidOperationException($"Save '{SaveLoadRoundTripSaveName}' did not produce a source artifact for the compatibility-guard fixture.");
+
+        var saveDirectory = Path.GetDirectoryName(sourcePath);
+        if (string.IsNullOrWhiteSpace(saveDirectory))
+            throw new InvalidOperationException($"Could not resolve the save directory from '{sourcePath}'.");
+
+        var saveExtension = Path.GetExtension(sourcePath);
+        var fixturePath = Path.Combine(saveDirectory, SaveModCompatibilityFixtureName + saveExtension);
+        var steamFixturePath = Path.Combine(saveDirectory, SaveModCompatibilitySteamFixtureName + saveExtension);
+        Exception? scenarioError = null;
+
+        try
+        {
+            CreateSaveWithInjectedMetadataMod(
+                sourcePath,
+                fixturePath,
+                SaveModCompatibilityMissingPackageId,
+                SaveModCompatibilityMissingModName);
+            CreateSaveWithReplacedMetadataPackageId(
+                sourcePath,
+                steamFixturePath,
+                RimBridgePackageId,
+                RimBridgeSteamPackageId);
+
+            var loadGame = await context.CallGameToolAsync("save_mod_guard.load_game", "rimworld/load_game", new
+            {
+                saveName = SaveModCompatibilityFixtureName
+            }, cancellationToken);
+            AssertMissingModCompatibilityFailure(loadGame, "rimworld/load_game");
+
+            var loadGameReady = await context.CallGameToolAsync("save_mod_guard.load_game_ready", "rimworld/load_game_ready", new
+            {
+                saveName = SaveModCompatibilityFixtureName,
+                timeoutMs = 120000,
+                pollIntervalMs = 50,
+                readiness = "visual",
+                pauseIfNeeded = true
+            }, cancellationToken);
+            AssertMissingModCompatibilityFailure(loadGameReady, "rimworld/load_game_ready");
+
+            var steamIdentityLoad = await context.CallGameToolAsync("save_mod_guard.load_game_ready_steam_identity", "rimworld/load_game_ready", new
+            {
+                saveName = SaveModCompatibilitySteamFixtureName,
+                timeoutMs = 120000,
+                pollIntervalMs = 50,
+                readiness = "visual",
+                pauseIfNeeded = true
+            }, cancellationToken);
+            AssertCompatibleSaveLoad(steamIdentityLoad, "rimworld/load_game_ready with the Steam package-id suffix");
+
+            var finalStatus = await context.CallGameToolAsync("save_mod_guard.final_bridge_status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+            context.EnsureSucceeded(finalStatus, "Checking bridge status after the local/Steam-compatible save was loaded");
+            if (JsonNodeHelpers.ReadBoolean(finalStatus.StructuredContent, "state", "automationReady") != true)
+                throw new InvalidOperationException("The game was no longer automation-ready after loading the local/Steam-compatible save fixture.");
+
+            context.SetSummaryValue("sourceSaveName", SaveLoadRoundTripSaveName);
+            context.SetSummaryValue("fixtureSaveName", SaveModCompatibilityFixtureName);
+            context.SetSummaryValue("steamIdentityFixtureSaveName", SaveModCompatibilitySteamFixtureName);
+            context.SetSummaryValue("missingPackageId", SaveModCompatibilityMissingPackageId);
+            context.SetScenarioData("loadGame", loadGame.StructuredContent);
+            context.SetScenarioData("loadGameReady", loadGameReady.StructuredContent);
+            context.SetScenarioData("steamIdentityLoadGameReady", steamIdentityLoad.StructuredContent);
+            context.SetScenarioData("finalBridgeState", JsonNodeHelpers.GetPath(finalStatus.StructuredContent, "state"));
+        }
+        catch (Exception ex)
+        {
+            scenarioError = ex;
+            throw;
+        }
+        finally
+        {
+            var cleanupErrors = new List<Exception>();
+            foreach (var disposableFixturePath in new[] { fixturePath, steamFixturePath })
+            {
+                try
+                {
+                    if (File.Exists(disposableFixturePath))
+                    {
+                        File.Delete(disposableFixturePath);
+                        context.Note($"Deleted compatibility-guard fixture '{disposableFixturePath}'.");
+                    }
+                }
+                catch (Exception cleanupError)
+                {
+                    cleanupErrors.Add(cleanupError);
+                    context.Note($"Failed to delete compatibility-guard fixture '{disposableFixturePath}': {cleanupError.Message}");
+                }
+            }
+
+            if (scenarioError is null && cleanupErrors.Count > 0)
+                throw new AggregateException("Failed to delete one or more compatibility-guard fixtures.", cleanupErrors);
+        }
+    }
+
     private static async Task RunScreenshotCaptureAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
     {
         await context.EnsurePlayableGameAsync(cancellationToken);
@@ -3671,6 +3794,233 @@ internal static class SmokeScenarioCatalog
     {
         var saves = JsonNodeHelpers.ReadArray(structuredContent, "saves");
         return saves.Any(save => string.Equals(JsonNodeHelpers.ReadString(save, "name"), saveName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void CreateSaveWithInjectedMetadataMod(
+        string sourcePath,
+        string fixturePath,
+        string packageId,
+        string modName)
+    {
+        CreateSaveWithRewrittenMetadataHeader(sourcePath, fixturePath, (headerBuffer, headerLength, metaStartIndex, metaCloseIndex) =>
+        {
+            var bufferedHeader = headerBuffer.AsSpan(0, headerLength);
+            var modIdsOpen = "<modIds>"u8;
+            var modIdsClose = "</modIds>"u8;
+            var modNamesOpen = "<modNames>"u8;
+            var modNamesClose = "</modNames>"u8;
+
+            var modIdsOpenIndex = bufferedHeader[metaStartIndex..metaCloseIndex].IndexOf(modIdsOpen);
+            var modIdsCloseIndex = bufferedHeader[metaStartIndex..metaCloseIndex].IndexOf(modIdsClose);
+            var modNamesOpenIndex = bufferedHeader[metaStartIndex..metaCloseIndex].IndexOf(modNamesOpen);
+            var modNamesCloseIndex = bufferedHeader[metaStartIndex..metaCloseIndex].IndexOf(modNamesClose);
+            if (modIdsOpenIndex < 0 || modIdsCloseIndex <= modIdsOpenIndex
+                || modNamesOpenIndex < 0 || modNamesCloseIndex <= modNamesOpenIndex)
+            {
+                throw new InvalidOperationException($"Save '{sourcePath}' did not contain both <meta>/<modIds> and <meta>/<modNames>.");
+            }
+
+            modIdsCloseIndex += metaStartIndex;
+            modNamesCloseIndex += metaStartIndex;
+
+            // XElement escapes element content without parsing any save-file XML, so DTDs and
+            // external entities in an untrusted fixture cannot be expanded by this rewrite.
+            var packageIdElement = Encoding.UTF8.GetBytes(new XElement("li", packageId).ToString(SaveOptions.DisableFormatting));
+            var modNameElement = Encoding.UTF8.GetBytes(new XElement("li", modName).ToString(SaveOptions.DisableFormatting));
+            return RewriteBufferedHeader(
+                headerBuffer,
+                headerLength,
+                (modIdsCloseIndex, 0, packageIdElement),
+                (modNamesCloseIndex, 0, modNameElement));
+        });
+    }
+
+    private static void CreateSaveWithReplacedMetadataPackageId(
+        string sourcePath,
+        string fixturePath,
+        string recordedPackageId,
+        string replacementPackageId)
+    {
+        CreateSaveWithRewrittenMetadataHeader(sourcePath, fixturePath, (headerBuffer, headerLength, metaStartIndex, metaCloseIndex) =>
+        {
+            var recordedElement = Encoding.UTF8.GetBytes(new XElement("li", recordedPackageId).ToString(SaveOptions.DisableFormatting));
+            var replacementElement = Encoding.UTF8.GetBytes(new XElement("li", replacementPackageId).ToString(SaveOptions.DisableFormatting));
+            var metadataHeader = headerBuffer.AsSpan(metaStartIndex, metaCloseIndex - metaStartIndex);
+            var relativeIndex = metadataHeader.IndexOf(recordedElement);
+            if (relativeIndex < 0)
+            {
+                throw new InvalidOperationException(
+                    $"Save '{sourcePath}' did not record expected package id '{recordedPackageId}' inside <meta>.");
+            }
+
+            var nextSearchIndex = relativeIndex + recordedElement.Length;
+            if (metadataHeader[nextSearchIndex..].IndexOf(recordedElement) >= 0)
+            {
+                throw new InvalidOperationException(
+                    $"Save '{sourcePath}' recorded package id '{recordedPackageId}' more than once inside <meta>; refusing an ambiguous fixture rewrite.");
+            }
+
+            return RewriteBufferedHeader(
+                headerBuffer,
+                headerLength,
+                (metaStartIndex + relativeIndex, recordedElement.Length, replacementElement));
+        });
+    }
+
+    private static void CreateSaveWithRewrittenMetadataHeader(
+        string sourcePath,
+        string fixturePath,
+        Func<byte[], int, int, int, byte[]> rewriteHeader)
+    {
+        const int maximumMetadataHeaderBytes = 4 * 1024 * 1024;
+        const int copyBufferBytes = 1024 * 1024;
+
+        var metaOpen = "<meta>"u8;
+        var metaClose = "</meta>"u8;
+
+        using var source = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            copyBufferBytes,
+            FileOptions.SequentialScan);
+        using var header = new MemoryStream(capacity: Math.Min(maximumMetadataHeaderBytes, checked((int)Math.Min(source.Length, maximumMetadataHeaderBytes))));
+
+        var readBuffer = new byte[64 * 1024];
+        var metaCloseIndex = -1;
+        while (header.Length < maximumMetadataHeaderBytes && metaCloseIndex < 0)
+        {
+            var bytesRemaining = maximumMetadataHeaderBytes - checked((int)header.Length);
+            var bytesRead = source.Read(readBuffer, 0, Math.Min(readBuffer.Length, bytesRemaining));
+            if (bytesRead == 0)
+                break;
+
+            var previousLength = checked((int)header.Length);
+            header.Write(readBuffer, 0, bytesRead);
+            var headerBytes = header.GetBuffer().AsSpan(0, checked((int)header.Length));
+            var searchStart = Math.Max(0, previousLength - metaClose.Length + 1);
+            var relativeIndex = headerBytes[searchStart..].IndexOf(metaClose);
+            if (relativeIndex >= 0)
+                metaCloseIndex = searchStart + relativeIndex;
+        }
+
+        if (metaCloseIndex < 0)
+        {
+            throw new InvalidOperationException(
+                $"Save '{sourcePath}' did not contain a UTF-8 <meta> header within the first {maximumMetadataHeaderBytes} bytes.");
+        }
+
+        var bufferedHeaderLength = checked((int)header.Length);
+        var bufferedHeader = header.GetBuffer().AsSpan(0, bufferedHeaderLength);
+        if (bufferedHeader.Length >= 2
+            && ((bufferedHeader[0] == 0xff && bufferedHeader[1] == 0xfe)
+                || (bufferedHeader[0] == 0xfe && bufferedHeader[1] == 0xff)))
+        {
+            throw new InvalidOperationException($"Save '{sourcePath}' uses an unsupported UTF-16 encoding; the compatibility fixture requires RimWorld's UTF-8 save format.");
+        }
+
+        var metaStartIndex = bufferedHeader.IndexOf(metaOpen);
+        if (metaStartIndex < 0 || metaStartIndex >= metaCloseIndex)
+            throw new InvalidOperationException($"Save '{sourcePath}' did not contain a valid top-level <meta> header.");
+
+        var rewrittenHeader = rewriteHeader(header.GetBuffer(), bufferedHeaderLength, metaStartIndex, metaCloseIndex);
+
+        using var fixture = new FileStream(
+            fixturePath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            copyBufferBytes,
+            FileOptions.SequentialScan);
+
+        fixture.Write(rewrittenHeader, 0, rewrittenHeader.Length);
+        source.CopyTo(fixture, copyBufferBytes);
+    }
+
+    private static byte[] RewriteBufferedHeader(
+        byte[] headerBuffer,
+        int headerLength,
+        params (int Index, int Length, byte[] Bytes)[] replacements)
+    {
+        var orderedReplacements = replacements.OrderBy(replacement => replacement.Index).ToList();
+        var rewrittenLength = headerLength + orderedReplacements.Sum(replacement => replacement.Bytes.Length - replacement.Length);
+        using var rewritten = new MemoryStream(capacity: rewrittenLength);
+
+        var copyStart = 0;
+        foreach (var replacement in orderedReplacements)
+        {
+            if (replacement.Index < copyStart
+                || replacement.Length < 0
+                || replacement.Index + replacement.Length > headerLength)
+            {
+                throw new InvalidOperationException("The requested save metadata header rewrites overlap or exceed the buffered header.");
+            }
+
+            rewritten.Write(headerBuffer, copyStart, replacement.Index - copyStart);
+            rewritten.Write(replacement.Bytes, 0, replacement.Bytes.Length);
+            copyStart = replacement.Index + replacement.Length;
+        }
+
+        rewritten.Write(headerBuffer, copyStart, headerLength - copyStart);
+        return rewritten.ToArray();
+    }
+
+    private static void AssertMissingModCompatibilityFailure(ToolInvocationResult result, string toolName)
+    {
+        if (result.Success)
+            throw new InvalidOperationException($"{toolName} unexpectedly accepted a save whose metadata requires '{SaveModCompatibilityMissingPackageId}'.");
+
+        if (JsonNodeHelpers.ReadBoolean(result.StructuredContent, "success") != false)
+            throw new InvalidOperationException($"{toolName} did not return structured success:false for an incompatible save.");
+
+        var code = JsonNodeHelpers.ReadString(result.StructuredContent, "code");
+        if (!string.Equals(code, "save.missing_mods", StringComparison.Ordinal))
+            throw new InvalidOperationException($"{toolName} returned error code '{code}' instead of 'save.missing_mods'.");
+
+        if (!result.Message.Contains("cannot be loaded", StringComparison.Ordinal))
+            throw new InvalidOperationException($"{toolName} did not explain that the incompatible save 'cannot be loaded'. Message: {result.Message}");
+
+        var compatibility = JsonNodeHelpers.GetPath(result.StructuredContent, "compatibility");
+        if (!string.Equals(JsonNodeHelpers.ReadString(compatibility, "status"), "missing_mods", StringComparison.Ordinal)
+            || JsonNodeHelpers.ReadBoolean(compatibility, "compatible") != false)
+        {
+            throw new InvalidOperationException($"{toolName} did not return the expected incompatible missing-mod status.");
+        }
+
+        var recordedModCount = JsonNodeHelpers.ReadInt32(compatibility, "recordedModCount");
+        var missingModCount = JsonNodeHelpers.ReadInt32(compatibility, "missingModCount");
+        if (recordedModCount.GetValueOrDefault() <= 0 || missingModCount != 1)
+            throw new InvalidOperationException($"{toolName} reported recordedModCount={recordedModCount} and missingModCount={missingModCount}; expected a recorded mod list with exactly one injected missing mod.");
+
+        var missingMods = JsonNodeHelpers.ReadArray(compatibility, "missingMods");
+        var injectedMod = missingMods.SingleOrDefault(mod =>
+            string.Equals(JsonNodeHelpers.ReadString(mod, "packageId"), SaveModCompatibilityMissingPackageId, StringComparison.Ordinal)
+            && string.Equals(JsonNodeHelpers.ReadString(mod, "name"), SaveModCompatibilityMissingModName, StringComparison.Ordinal));
+        if (injectedMod is null)
+            throw new InvalidOperationException($"{toolName} did not include the injected package id and name in compatibility.missingMods.");
+
+        var canonicalPackageId = JsonNodeHelpers.ReadString(injectedMod, "canonicalPackageId");
+        if (!string.Equals(canonicalPackageId, SaveModCompatibilityMissingPackageId, StringComparison.Ordinal))
+            throw new InvalidOperationException($"{toolName} returned canonical package id '{canonicalPackageId}' for '{SaveModCompatibilityMissingPackageId}'.");
+    }
+
+    private static void AssertCompatibleSaveLoad(ToolInvocationResult result, string actionDescription)
+    {
+        if (!result.Success || JsonNodeHelpers.ReadBoolean(result.StructuredContent, "success") != true)
+            throw new InvalidOperationException($"{actionDescription} did not load the save successfully. {result.Message}".Trim());
+
+        var compatibility = JsonNodeHelpers.GetPath(result.StructuredContent, "compatibility");
+        var compatibilityStatus = JsonNodeHelpers.ReadString(compatibility, "status");
+        var compatible = JsonNodeHelpers.ReadBoolean(compatibility, "compatible");
+        var missingModCount = JsonNodeHelpers.ReadInt32(compatibility, "missingModCount");
+        if (!string.Equals(compatibilityStatus, "compatible", StringComparison.Ordinal)
+            || compatible != true
+            || missingModCount != 0)
+        {
+            throw new InvalidOperationException(
+                $"{actionDescription} returned compatibility status '{compatibilityStatus}', compatible={compatible}, and missingModCount={missingModCount}; expected an explicitly compatible save with no missing mods.");
+        }
     }
 
     private static string ResolveArchitectCategoryId(IReadOnlyList<JsonNode?> categories, string preferredDefName)

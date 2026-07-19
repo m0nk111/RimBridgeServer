@@ -984,14 +984,14 @@ Parameters:
 
 ### `rimworld/load_game`
 
-Load a named RimWorld save
+Load a named RimWorld save after verifying every mod recorded by it is currently active
 
 Parameters:
 - `saveName` (`string`, `required`): Save name without extension
 
 ### `rimworld/load_game_ready`
 
-Load a named RimWorld save and wait until the requested readiness level before returning
+Load a named RimWorld save after verifying every recorded mod is active, then wait until the requested readiness level before returning
 
 Parameters:
 - `saveName` (`string`, `required`): Save name without extension
