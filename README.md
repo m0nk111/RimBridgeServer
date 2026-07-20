@@ -385,8 +385,8 @@ Playback default: RimBridgeServer enables RimWorld's private `TickManager.UltraS
 - `rimworld/open_window_by_type` - Open a RimWorld window by short or full .NET type name when the window exposes a public parameterless constructor
 - `rimworld/click_screen_target` - Semantically click a known actionable target id returned by `rimworld/get_screen_targets` without requiring OS focus
 - `rimworld/switch_language` - Switch RimWorld to an installed language by the recommendedQuery from `rimworld/list_languages` or another exact language name match, mirroring the main-menu language picker and saving prefs
-- `rimworld/start_debug_game` - Start RimWorld's built-in quick test colony from the main menu
-- `rimworld/start_debug_game_ready` - Start RimWorld's built-in quick test colony from the main menu and wait for the requested readiness level
+- `rimworld/start_debug_game` - Start RimWorld's built-in quick test colony from the main menu while honoring RimWorld's Pause on load preference
+- `rimworld/start_debug_game_ready` - Start RimWorld's built-in quick test colony from the main menu, honor RimWorld's Pause on load preference, and wait for the requested readiness level
 - `rimworld/go_to_main_menu` - Return to the RimWorld main menu entry scene, or no-op if already there
 
 ### Selection And Colony State

@@ -818,20 +818,20 @@ public class RimBridgeTools
         return InvokeAlias(Arguments((nameof(language), language)));
     }
 
-    [ReadmeTool("UI And Input", "Start RimWorld's built-in quick test colony from the main menu")]
-    [Tool("rimworld/start_debug_game", Description = "Start RimWorld's built-in quick test colony from the main menu")]
+    [ReadmeTool("UI And Input", "Start RimWorld's built-in quick test colony from the main menu while honoring RimWorld's Pause on load preference")]
+    [Tool("rimworld/start_debug_game", Description = "Start RimWorld's built-in quick test colony from the main menu while honoring RimWorld's Pause on load preference")]
     public object StartDebugGame()
     {
         return InvokeAlias();
     }
 
-    [ReadmeTool("UI And Input", "Start RimWorld's built-in quick test colony from the main menu and wait for the requested readiness level")]
-    [Tool("rimworld/start_debug_game_ready", Description = "Start RimWorld's built-in quick test colony from the main menu and wait for the requested readiness level")]
+    [ReadmeTool("UI And Input", "Start RimWorld's built-in quick test colony from the main menu, honor RimWorld's Pause on load preference, and wait for the requested readiness level")]
+    [Tool("rimworld/start_debug_game_ready", Description = "Start RimWorld's built-in quick test colony from the main menu, honor RimWorld's Pause on load preference, and wait for the requested readiness level")]
     public object StartDebugGameReady(
         [ToolParameter(Description = "Maximum time to wait in milliseconds")] int timeoutMs = 120000,
         [ToolParameter(Description = "Polling interval in milliseconds")] int pollIntervalMs = 50,
         [ToolParameter(Description = "Readiness target: gameData, mapData, currentMap, playable, or visual")] string readiness = AutomationReadiness.DefaultTargetName,
-        [ToolParameter(Description = "Pause the game before returning success if it is still running")] bool pauseIfNeeded = false,
+        [ToolParameter(Description = "Additionally pause the game before returning success if it is still running, independently of RimWorld's Pause on load preference")] bool pauseIfNeeded = false,
         [ToolParameter(Description = "Alias for readiness; useful when callers naturally name the requested readiness target explicitly")] string targetReadiness = null,
         [ToolParameter(Description = "Convenience alias that forces readiness to visual when true")] bool waitForVisualReady = false)
     {

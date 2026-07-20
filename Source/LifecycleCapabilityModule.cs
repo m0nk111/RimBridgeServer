@@ -672,9 +672,11 @@ internal sealed class LifecycleCapabilityModule
             };
         }
 
+        var pauseOnLoad = Prefs.PauseOnLoad;
         LongEventHandler.QueueLongEvent(delegate
         {
             Root_Play.SetupForQuickTestPlay();
+            RimBridgeDebugGamePause.Register(Current.Game, pauseOnLoad);
             PageUtility.InitGameStart();
         }, "GeneratingMap", doAsynchronously: true, GameAndMapInitExceptionHandlers.ErrorWhileGeneratingMap);
 
@@ -687,6 +689,7 @@ internal sealed class LifecycleCapabilityModule
             ["storyteller"] = SafeDefName(() => StorytellerDefOf.Cassandra.defName, "Cassandra"),
             ["difficulty"] = SafeDefName(() => DifficultyDefOf.Rough.defName, "Rough"),
             ["mapSize"] = 250,
+            ["pauseOnLoad"] = pauseOnLoad,
             ["state"] = RimWorldState.ToolStateSnapshot()
         };
     }

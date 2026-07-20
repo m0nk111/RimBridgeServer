@@ -19,6 +19,7 @@ internal sealed class SmokeScenarioDefinition
 internal static class SmokeScenarioCatalog
 {
     public const string DebugGameLoadScenarioName = "debug-game-load";
+    public const string DebugGamePauseOnLoadScenarioName = "debug-game-pause-on-load";
     public const string ContextMenuCancelRoundTripScenarioName = "context-menu-cancel-roundtrip";
     public const string DebugActionDiscoveryScenarioName = "debug-action-discovery";
     public const string DebugActionMapTargetScenarioName = "debug-action-map-target";
@@ -59,6 +60,12 @@ internal static class SmokeScenarioCatalog
                 Name = DebugGameLoadScenarioName,
                 Description = "Start RimWorld's debug colony from the main menu and capture the resulting operation/log window.",
                 RunAsync = RunDebugGameLoadAsync
+            },
+            [DebugGamePauseOnLoadScenarioName] = new SmokeScenarioDefinition
+            {
+                Name = DebugGamePauseOnLoadScenarioName,
+                Description = "Verify both debug-game start commands honor RimWorld's effective Pause on load preference without adding an automation pause.",
+                RunAsync = RunDebugGamePauseOnLoadAsync
             },
             [ContextMenuCancelRoundTripScenarioName] = new SmokeScenarioDefinition
             {
@@ -262,6 +269,112 @@ internal static class SmokeScenarioCatalog
             "collect_logs",
             cancellationToken);
         context.ApplyObservationWindow(observation);
+    }
+
+    private static async Task RunDebugGamePauseOnLoadAsync(SmokeScenarioContext context, CancellationToken cancellationToken)
+    {
+        await EnsureDebugGameEntrySceneAsync(context, "debug_game_pause.initial_entry", cancellationToken);
+        var observationWindow = await context.BeginObservationWindowAsync("debug_game_pause.snapshot_bridge_status", cancellationToken);
+
+        var readyStart = await context.CallGameToolAsync("debug_game_pause.start_ready", "rimworld/start_debug_game_ready", new
+        {
+            timeoutMs = 180000,
+            pollIntervalMs = 50,
+            readiness = "visual",
+            pauseIfNeeded = false
+        }, cancellationToken);
+        context.EnsureSucceeded(readyStart, "Starting a debug game and waiting without an automation pause");
+
+        var pauseOnLoad = JsonNodeHelpers.ReadBoolean(readyStart.StructuredContent, "start", "pauseOnLoad")
+            ?? throw new InvalidOperationException("The ready debug-game response did not report RimWorld's effective Pause on load preference.");
+        AssertDebugGamePauseState(readyStart.StructuredContent, pauseOnLoad, "The ready debug-game start");
+
+        await EnsureDebugGameEntrySceneAsync(context, "debug_game_pause.entry_before_queued_start", cancellationToken);
+
+        var queuedStart = await context.CallGameToolAsync("debug_game_pause.start_queued", "rimworld/start_debug_game", new { }, cancellationToken);
+        context.EnsureSucceeded(queuedStart, "Queueing a debug game without an automation pause");
+
+        var operationId = context.RequireOperationId(queuedStart, "Queueing a debug game without an automation pause");
+        await context.WaitForOperationAsync("debug_game_pause.wait_for_queued_start", operationId, cancellationToken);
+
+        var queuedWait = await context.CallGameToolAsync("debug_game_pause.wait_for_queued_game", "rimbridge/wait_for_game_loaded", new
+        {
+            timeoutMs = 180000,
+            pollIntervalMs = 50,
+            readiness = "visual",
+            pauseIfNeeded = false
+        }, cancellationToken);
+        context.EnsureSucceeded(queuedWait, "Waiting for the queued debug game without an automation pause");
+        AssertDebugGamePauseState(queuedWait.StructuredContent, pauseOnLoad, "The queued debug-game start");
+
+        context.SetSummaryValue("pauseOnLoad", pauseOnLoad.ToString());
+        context.SetSummaryValue("readyStartPaused", pauseOnLoad.ToString());
+        context.SetSummaryValue("queuedStartPaused", pauseOnLoad.ToString());
+        context.SetScenarioData("readyStart", readyStart.StructuredContent);
+        context.SetScenarioData("queuedStart", queuedStart.StructuredContent);
+        context.SetScenarioData("queuedWait", queuedWait.StructuredContent);
+
+        var observation = await observationWindow.CaptureAsync(
+            "debug_game_pause.final_bridge_status",
+            "debug_game_pause.collect_operation_events",
+            "debug_game_pause.collect_logs",
+            cancellationToken);
+        context.ApplyObservationWindow(observation);
+    }
+
+    private static async Task EnsureDebugGameEntrySceneAsync(
+        SmokeScenarioContext context,
+        string stepPrefix,
+        CancellationToken cancellationToken)
+    {
+        var status = await context.CallGameToolAsync($"{stepPrefix}.status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+        context.EnsureSucceeded(status, "Reading RimWorld state before preparing the debug-game entry scene");
+        if (IsDebugGameEntryScene(status.StructuredContent))
+            return;
+
+        await context.WaitForLongEventIdleAsync($"{stepPrefix}.wait_for_idle", cancellationToken);
+
+        var goToMainMenu = await context.CallGameToolAsync($"{stepPrefix}.go_to_main_menu", "rimworld/go_to_main_menu", new { }, cancellationToken);
+        context.EnsureSucceeded(goToMainMenu, "Returning to RimWorld's main menu for a debug-game start");
+
+        var operationId = context.RequireOperationId(goToMainMenu, "Returning to RimWorld's main menu for a debug-game start");
+        await context.WaitForOperationAsync($"{stepPrefix}.wait_for_main_menu_operation", operationId, cancellationToken);
+        await context.WaitForLongEventIdleAsync($"{stepPrefix}.wait_for_main_menu_idle", cancellationToken);
+
+        var entryStatus = await context.CallGameToolAsync($"{stepPrefix}.entry_status", "rimbridge/get_bridge_status", new { }, cancellationToken);
+        context.EnsureSucceeded(entryStatus, "Reading RimWorld state after returning to the main menu");
+        if (!IsDebugGameEntryScene(entryStatus.StructuredContent))
+        {
+            var state = JsonNodeHelpers.GetPath(entryStatus.StructuredContent, "state");
+            throw new InvalidOperationException(
+                $"RimWorld did not reach the debug-game entry scene after returning to the main menu. " +
+                $"programState={JsonNodeHelpers.ReadString(state, "programState")}, " +
+                $"inEntryScene={JsonNodeHelpers.ReadBoolean(state, "inEntryScene")}, " +
+                $"hasCurrentGame={JsonNodeHelpers.ReadBoolean(state, "hasCurrentGame")}.");
+        }
+    }
+
+    private static bool IsDebugGameEntryScene(JsonNode? response)
+    {
+        return string.Equals(JsonNodeHelpers.ReadString(response, "state", "programState"), "Entry", StringComparison.OrdinalIgnoreCase)
+            && JsonNodeHelpers.ReadBoolean(response, "state", "inEntryScene") == true
+            && JsonNodeHelpers.ReadBoolean(response, "state", "hasCurrentGame") == false;
+    }
+
+    private static void AssertDebugGamePauseState(JsonNode? response, bool expectedPaused, string actionDescription)
+    {
+        var paused = JsonNodeHelpers.ReadBoolean(response, "state", "paused");
+        var timeSpeed = JsonNodeHelpers.ReadString(response, "state", "timeSpeed");
+        if (paused != expectedPaused)
+        {
+            throw new InvalidOperationException(
+                $"{actionDescription} reported paused={paused?.ToString() ?? "null"}; expected {expectedPaused}. timeSpeed={timeSpeed}.");
+        }
+
+        if (expectedPaused && !string.Equals(timeSpeed, "Paused", StringComparison.Ordinal))
+            throw new InvalidOperationException($"{actionDescription} reported timeSpeed='{timeSpeed}' instead of 'Paused'.");
+        if (!expectedPaused && string.Equals(timeSpeed, "Paused", StringComparison.Ordinal))
+            throw new InvalidOperationException($"{actionDescription} remained at timeSpeed='Paused' despite pause-on-load being disabled.");
     }
 
     private static async Task RunDebugActionDiscoveryAsync(SmokeScenarioContext context, CancellationToken cancellationToken)

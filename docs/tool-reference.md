@@ -725,19 +725,19 @@ Parameters:
 
 ### `rimworld/start_debug_game`
 
-Start RimWorld's built-in quick test colony from the main menu
+Start RimWorld's built-in quick test colony from the main menu while honoring RimWorld's Pause on load preference
 
 Parameters: none.
 
 ### `rimworld/start_debug_game_ready`
 
-Start RimWorld's built-in quick test colony from the main menu and wait for the requested readiness level
+Start RimWorld's built-in quick test colony from the main menu, honor RimWorld's Pause on load preference, and wait for the requested readiness level
 
 Parameters:
 - `timeoutMs` (`int`, `optional`, default `120000`): Maximum time to wait in milliseconds
 - `pollIntervalMs` (`int`, `optional`, default `50`): Polling interval in milliseconds
 - `readiness` (`string`, `optional`, default `AutomationReadiness.DefaultTargetName`): Readiness target: gameData, mapData, currentMap, playable, or visual
-- `pauseIfNeeded` (`bool`, `optional`, default `false`): Pause the game before returning success if it is still running
+- `pauseIfNeeded` (`bool`, `optional`, default `false`): Additionally pause the game before returning success if it is still running, independently of RimWorld's Pause on load preference
 - `targetReadiness` (`string`, `optional`, default `null`): Alias for readiness; useful when callers naturally name the requested readiness target explicitly
 - `waitForVisualReady` (`bool`, `optional`, default `false`): Convenience alias that forces readiness to visual when true
 
